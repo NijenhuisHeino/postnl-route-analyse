@@ -507,7 +507,38 @@ def _render_dashboard(
             st.caption("Geen vervoerder-data beschikbaar.")
 
 
+def _auto_restore_cache() -> None:
+    """Als kritieke cache-bestanden ontbreken maar in Drive-backup staan, herstel."""
+    import shutil
+
+    local = Path(".cache")
+    drive = Path(
+        "/Users/johnnynijenhuis/Library/CloudStorage/"
+        "GoogleDrive-info@nijenhuistrucksolutions.nl/Mijn Drive/"
+        "Nijenhuis Truck Solutions/Bedrijven/Den Haag/PostNL/Project/"
+        "Data analyse ritten/Route analyse tool/cache-backup"
+    )
+    if not drive.exists():
+        return
+    local.mkdir(exist_ok=True)
+    restored = 0
+    for src in drive.glob("*.parquet"):
+        dst = local / src.name
+        if not dst.exists():
+            try:
+                shutil.copy2(src, dst)
+                restored += 1
+            except Exception:
+                pass
+    if restored:
+        st.toast(
+            f"☁️ Cache hersteld: {restored} bestand(en) van Drive-backup.",
+            icon="✅",
+        )
+
+
 def main() -> None:
+    _auto_restore_cache()
     st.markdown(ETA_CSS, unsafe_allow_html=True)
     st.markdown(ETA_HERO, unsafe_allow_html=True)
 

@@ -110,6 +110,14 @@ def main() -> None:
         flush=True,
     )
 
+    print(f"[{time.strftime('%H:%M:%S')}] Auto-backup naar Google Drive...", flush=True)
+    try:
+        from scripts.sync_cache import backup as sync_backup
+
+        sync_backup()
+    except Exception as e:
+        print(f"  Backup faalde (cache is wel lokaal veilig): {e}", flush=True)
+
 
 if __name__ == "__main__":
     main()
