@@ -279,6 +279,31 @@ def _detect_schema_cached(path: str, mtime: float) -> tuple[str, str] | None:
         return None
 
 
+_AGG_EDGES_PARQUET = Path(".cache/agg_weighted_edges_full.parquet")
+_AGG_HEAT_PARQUET = Path(".cache/agg_road_heatmap_full.parquet")
+
+
+@st.cache_data(show_spinner=False)
+def _load_full_weighted_edges() -> list | None:
+    """Laad pre-computed weighted edges uit parquet, of None als niet beschikbaar."""
+    if not _AGG_EDGES_PARQUET.exists():
+        return None
+    edf = pd.read_parquet(_AGG_EDGES_PARQUET)
+    return [
+        ((float(r.lat1), float(r.lon1)), (float(r.lat2), float(r.lon2)), int(r.n_wagens))
+        for r in edf.itertuples(index=False)
+    ]
+
+
+@st.cache_data(show_spinner=False)
+def _load_full_road_heatmap() -> list | None:
+    """Laad pre-computed road heatmap points uit parquet, of None als niet beschikbaar."""
+    if not _AGG_HEAT_PARQUET.exists():
+        return None
+    hdf = pd.read_parquet(_AGG_HEAT_PARQUET)
+    return [(float(r.lat), float(r.lon), float(r.weight)) for r in hdf.itertuples(index=False)]
+
+
 @st.cache_data(show_spinner="Excel inlezen...")
 def _load_trip_stops(path: str) -> pd.DataFrame:
     return load_trips(Path(path))
@@ -1096,9 +1121,20 @@ def main() -> None:
                     routes = fetch_routes(segs, progress_cb=_cb)
                     progress.empty()
 
+        is_full_dataset = len(stops) == len(df)
+
         if show_routes and use_road_routes:
-            with st.spinner("Wegvlakken wegen en kleuren..."):
-                edges = compute_weighted_edges(stops, routes)
+            edges = None
+            if is_full_dataset:
+                edges = _load_full_weighted_edges()
+                if edges:
+                    st.caption(
+                        f"⚡ {len(edges):,} wegvlakken geladen uit pre-compute cache."
+                        .replace(",", ".")
+                    )
+            if edges is None:
+                with st.spinner("Wegvlakken wegen en kleuren..."):
+                    edges = compute_weighted_edges(stops, routes)
             if edges:
                 max_n = max(n for _, _, n in edges)
                 kept = [(p1, p2, n) for p1, p2, n in edges if n >= road_threshold]
@@ -1147,8 +1183,17 @@ def main() -> None:
 
         road_heat_points: list[tuple[float, float, float]] = []
         if show_road_heatmap:
-            with st.spinner("Wegvlak-heatmap berekenen..."):
-                all_points = compute_road_heatmap_points(stops, routes)
+            all_points = None
+            if is_full_dataset:
+                all_points = _load_full_road_heatmap()
+                if all_points:
+                    st.caption(
+                        f"⚡ {len(all_points):,} wegvlak-cellen geladen uit pre-compute cache."
+                        .replace(",", ".")
+                    )
+            if all_points is None:
+                with st.spinner("Wegvlak-heatmap berekenen..."):
+                    all_points = compute_road_heatmap_points(stops, routes)
             road_heat_points = [p for p in all_points if p[2] >= road_threshold]
             if road_heat_points:
                 HeatMap(
