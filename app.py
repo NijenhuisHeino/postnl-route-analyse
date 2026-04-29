@@ -276,16 +276,12 @@ def _detect_schema_cached(path: str, mtime: float) -> tuple[str, str] | None:
 
 
 @st.cache_data(show_spinner=False)
-def _load_cached_weighted_edges(variant: str) -> list | None:
-    """Laad pre-computed weighted edges per variant ('full', 'eigen', 'charter')."""
+def _load_cached_weighted_edges_df(variant: str) -> pd.DataFrame | None:
+    """Laad pre-computed weighted edges per variant als DataFrame."""
     p = Path(f".cache/agg_weighted_edges_{variant}.parquet")
     if not p.exists():
         return None
-    edf = pd.read_parquet(p)
-    return [
-        ((float(r.lat1), float(r.lon1)), (float(r.lat2), float(r.lon2)), int(r.n_wagens))
-        for r in edf.itertuples(index=False)
-    ]
+    return pd.read_parquet(p)
 
 
 @st.cache_data(show_spinner=False)
@@ -957,7 +953,20 @@ def main() -> None:
 
         st.header("Kaartlagen")
         show_heatmap = st.checkbox("Heatmap", value=True)
-        show_markers = st.checkbox("Stop-markers", value=False)
+        show_markers = st.checkbox("Drukste stop-locaties", value=False)
+        marker_top_n = st.slider(
+            "Aantal locaties (top N op unieke wagens)",
+            min_value=50,
+            max_value=5000,
+            value=250,
+            step=50,
+            disabled=not show_markers,
+            help=(
+                "Groepeert per adres, telt hoeveel unieke vrachtwagens deze "
+                "locatie bezoeken, en toont de top N. Default 250 = de drukste "
+                "knooppunten — beste indicatie voor kandidaat-laadlocaties."
+            ),
+        )
         show_routes = st.checkbox("Routelijnen", value=False)
         use_road_routes = st.checkbox(
             "→ volg wegennet (OSRM)",
@@ -985,9 +994,24 @@ def main() -> None:
             step=1,
             disabled=not (show_road_heatmap or (show_routes and use_road_routes)),
             help=(
-                "Wegvlakken/routelijnen met minder unieke wagens worden verborgen. "
-                "Routelijnen krijgen een kleurverloop van licht paars (net boven "
-                "drempel) naar donkerpaars (drukst bereden)."
+                "Een 'wegvlak' is een stukje weg van ca. 50-200 m "
+                "(OSRM road-graph edge). Heel Nederland heeft >500.000 "
+                "wegvlakken in deze data. Wegvlakken met minder unieke "
+                "wagens dan deze drempel worden verborgen."
+            ),
+        )
+        road_show_pct = st.slider(
+            "Toon top X% drukste wegvlakken",
+            min_value=1,
+            max_value=25,
+            value=1,
+            step=1,
+            disabled=not (show_routes and use_road_routes),
+            help=(
+                "Van alle wegvlakken boven de drempel: toon alleen de "
+                "drukst bereden top X%. Voorkomt dat de kaart dichtslibt. "
+                "1% bij ~500k wegvlakken = 5.000 lijnen (= goed leesbaar). "
+                "Hogere percentages = meer detail, maar trager."
             ),
         )
         show_chargers = st.checkbox(
@@ -1104,37 +1128,50 @@ def main() -> None:
                 heat_points = stops[["lat", "lon", "dwell_min"]].values.tolist()
             HeatMap(heat_points, radius=14, blur=20, min_opacity=0.3).add_to(fmap)
 
-        MARKER_CAP = 20_000
         if show_markers:
-            if len(stops) > MARKER_CAP:
-                stops_markers = stops.nlargest(MARKER_CAP, "dwell_min", keep="first")
-                st.caption(
-                    f"⚡ Stop-markers gecapped op top-{MARKER_CAP:,} (sortering: standtijd) "
-                    f"uit {len(stops):,} stops."
-                    .replace(",", ".")
+            loc_agg = (
+                stops.groupby("adres", sort=False)
+                .agg(
+                    lat=("lat", "first"),
+                    lon=("lon", "first"),
+                    locatie_naam=("locatie_naam", "first"),
+                    n_unieke_wagens=("wagencode", "nunique"),
+                    n_stops=("trip_id", "size"),
+                    n_trips=("trip_id", "nunique"),
+                    gem_rijduur_min=("dwell_min", "mean"),
                 )
-            else:
-                stops_markers = stops
+                .reset_index()
+                .nlargest(marker_top_n, "n_unieke_wagens")
+            )
+            st.caption(
+                f"⚡ Top-{marker_top_n:,} drukste locaties getoond uit "
+                f"{stops['adres'].nunique():,} unieke adressen "
+                f"(sortering: aantal unieke wagens)."
+                .replace(",", ".")
+            )
             cluster = MarkerCluster().add_to(fmap)
-            for _, row in stops_markers.iterrows():
+            max_w = int(loc_agg["n_unieke_wagens"].max()) if not loc_agg.empty else 1
+            for r in loc_agg.itertuples(index=False):
+                radius = 4 + 8 * (int(r.n_unieke_wagens) / max(max_w, 1))
                 popup = folium.Popup(
                     html=(
-                        f"<b>{row['locatie_naam'] or '(onbekend)'}</b><br>"
-                        f"{row['adres'] or ''}<br>"
-                        f"Wagen: {row['wagencode']}<br>"
-                        f"Datum: {row['trip_date'].date() if pd.notna(row['trip_date']) else ''}<br>"
-                        f"Actie: {row['acties']}<br>"
-                        f"Standtijd: {int(row['dwell_min'])} min"
-                    ),
-                    max_width=280,
+                        f"<b>{r.locatie_naam or '(onbekend)'}</b><br>"
+                        f"{r.adres or ''}<br>"
+                        f"🚛 <b>{int(r.n_unieke_wagens)} unieke wagens</b><br>"
+                        f"📍 {int(r.n_stops):,} stops · {int(r.n_trips):,} trips<br>"
+                        f"⏱️ Gem. rijduur ernaartoe: {r.gem_rijduur_min:.0f} min"
+                    ).replace(",", "."),
+                    max_width=300,
                 )
                 folium.CircleMarker(
-                    location=[row["lat"], row["lon"]],
-                    radius=4,
+                    location=[r.lat, r.lon],
+                    radius=radius,
                     color="#1f77b4",
                     fill=True,
-                    fill_opacity=0.7,
+                    fill_opacity=0.6,
+                    weight=1,
                     popup=popup,
+                    tooltip=f"{int(r.n_unieke_wagens)} unieke wagens",
                 ).add_to(cluster)
 
         routes: dict = {}
@@ -1192,47 +1229,56 @@ def main() -> None:
         cache_variant = _detect_cache_variant(stops, df)
 
         if show_routes and use_road_routes:
-            edges = None
+            edges_df: pd.DataFrame | None = None
             if cache_variant:
-                edges = _load_cached_weighted_edges(cache_variant)
-                if edges:
+                edges_df = _load_cached_weighted_edges_df(cache_variant)
+                if edges_df is not None and not edges_df.empty:
                     st.caption(
-                        f"⚡ {len(edges):,} wegvlakken geladen uit pre-compute cache "
+                        f"⚡ {len(edges_df):,} wegvlakken uit pre-compute cache "
                         f"(variant: {cache_variant})."
                         .replace(",", ".")
                     )
-            if edges is None:
+            if edges_df is None:
                 with st.spinner("Wegvlakken wegen en kleuren..."):
                     edges = compute_weighted_edges(stops, routes)
-            if edges:
-                max_n = max(n for _, _, n in edges)
-                kept = [(p1, p2, n) for p1, p2, n in edges if n >= road_threshold]
-                if not kept:
+                edges_df = pd.DataFrame(
+                    [
+                        {"lat1": p1[0], "lon1": p1[1], "lat2": p2[0], "lon2": p2[1], "n_wagens": n}
+                        for p1, p2, n in edges
+                    ]
+                )
+            if edges_df is not None and not edges_df.empty:
+                max_n = int(edges_df["n_wagens"].max())
+                filtered = edges_df[edges_df["n_wagens"] >= road_threshold]
+                if filtered.empty:
                     st.warning(
                         f"Geen wegvlak heeft ≥ {road_threshold} unieke wagens "
                         f"(max in dataset = {max_n}). Zet de drempel lager."
                     )
-                POLYLINE_CAP = 5000
-                if len(kept) > POLYLINE_CAP:
-                    kept_sorted = sorted(kept, key=lambda e: e[2], reverse=True)
-                    kept = kept_sorted[:POLYLINE_CAP]
-                    st.info(
-                        f"ℹ️ {len(kept_sorted):,} wegvlakken boven drempel — "
-                        f"alleen drukste {POLYLINE_CAP} getekend om browser te "
-                        "ontlasten. Verhoog drempel voor minder lijnen."
-                    )
-                denom = max(1, max_n - road_threshold)
-                for p1, p2, n in kept:
-                    t = (n - road_threshold) / denom
-                    color = lerp_hex("#ddd6fe", "#4c1d95", t)
-                    weight = 1.2 + 4.8 * t
-                    folium.PolyLine(
-                        [p1, p2],
-                        color=color,
-                        weight=weight,
-                        opacity=0.85,
-                        tooltip=f"{n} unieke wagens",
-                    ).add_to(fmap)
+                else:
+                    target_n = max(50, int(len(filtered) * road_show_pct / 100))
+                    if len(filtered) > target_n:
+                        top = filtered.nlargest(target_n, "n_wagens")
+                        st.info(
+                            f"ℹ️ {len(filtered):,} wegvlakken boven drempel · "
+                            f"top {road_show_pct}% getekend = {target_n:,} lijnen."
+                            .replace(",", ".")
+                        )
+                    else:
+                        top = filtered
+                    denom = max(1, max_n - road_threshold)
+                    for r in top.itertuples(index=False):
+                        n = int(r.n_wagens)
+                        t = (n - road_threshold) / denom
+                        color = lerp_hex("#ddd6fe", "#4c1d95", t)
+                        weight = 1.2 + 4.8 * t
+                        folium.PolyLine(
+                            [(r.lat1, r.lon1), (r.lat2, r.lon2)],
+                            color=color,
+                            weight=weight,
+                            opacity=0.85,
+                            tooltip=f"{n} unieke wagens",
+                        ).add_to(fmap)
         elif show_routes:
             TRIP_CAP = 2000
             trip_groups = list(stops.groupby(["wagencode", "trip_date", "trip_id"]))
