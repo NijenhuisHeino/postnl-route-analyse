@@ -1236,103 +1236,109 @@ def main() -> None:
         )
 
         st.header("Kaartlagen")
-        show_heatmap = st.checkbox("Heatmap", value=True)
-        show_markers = st.checkbox("Drukste stop-locaties", value=False)
-        marker_top_n = st.slider(
-            "Aantal locaties (top N op aantal stops)",
-            min_value=50,
-            max_value=5000,
-            value=250,
-            step=50,
-            disabled=not show_markers,
-            help=(
-                "Groepeert per adres, telt het totaal aantal stops daar, "
-                "en toont de top N. Default 250 = de vaakst bezochte locaties."
-            ),
-        )
-        show_routes = st.checkbox(
-            "Routelijnen (rechte lijnen tussen stops)",
-            value=False,
-            help="Eenvoudige stop-naar-stop verbindingen, geen wegennet.",
-        )
-        show_road_heatmap = st.checkbox(
-            "Wegvlak-heatmap (OSRM, alle trips)",
-            value=False,
-            disabled=schema != "trip_stop",
-            help=(
-                "Basislaag: gradient blauw → oranje → donkerrood toont hoe vaak "
-                "elk wegvlak gebruikt wordt. Donkerrood = drukste corridors."
-                if schema == "trip_stop"
-                else "Niet beschikbaar in trip-summary modus."
-            ),
-        )
-        show_top_x_overlay = st.checkbox(
-            "→ Highlight top X% drukste",
-            value=False,
-            disabled=not show_road_heatmap,
-            help=(
-                "Bovenop de heatmap: paarse lijnen tonen de drukst bereden "
-                "wegvlakken (gerangschikt op aantal keer bereden, niet op "
-                "unieke wagens). Handig om de allerdrukste delen te benoemen."
-            ),
-        )
-        road_threshold = st.slider(
-            "Min. aantal unieke wagens per wegvlak",
-            min_value=1,
-            max_value=100,
-            value=10,
-            step=1,
-            disabled=not show_road_heatmap,
-            help=(
-                "Een 'wegvlak' is een stukje weg van ca. 50-200 m "
-                "(OSRM road-graph edge). Heel Nederland heeft >500.000 "
-                "wegvlakken in deze data. Wegvlakken met minder unieke "
-                "wagens dan deze drempel worden verborgen."
-            ),
-        )
-        road_show_pct = st.slider(
-            "Top X% (highlighted)",
-            min_value=1,
-            max_value=25,
-            value=1,
-            step=1,
-            disabled=not show_top_x_overlay,
-            help=(
-                "Van alle wegvlakken boven de drempel: highlight de drukst "
-                "bereden top X% in paars. Sortering op aantal keer bereden "
-                "(n_passes), niet op unieke wagens. "
-                "1% bij ~500k wegvlakken = 5.000 lijnen (= goed leesbaar). "
-                "Hogere percentages = meer detail, maar trager."
-            ),
-        )
-        show_chargers = st.checkbox(
-            "Geverifieerde HDV-laadlocaties",
-            value=False,
-            help=(
-                "Handmatig geverifieerde laadlocaties die toegankelijk zijn "
-                "voor vrachtwagens (244 locaties)."
-            ),
-        )
-        charger_min_kw = st.slider(
-            "Min. laadvermogen (kW)",
-            min_value=0,
-            max_value=400,
-            value=150,
-            step=50,
-            disabled=not show_chargers,
-        )
-        charger_only_dedicated = st.checkbox(
-            "Alleen dedicated voor HDV",
-            value=False,
-            disabled=not show_chargers,
-            help="Alleen locaties die exclusief voor vrachtwagens zijn ingericht.",
-        )
-        charger_access = st.multiselect(
-            "Toegankelijkheid",
-            ["Publiek", "Semi-publiek", "Privaat"],
-            default=["Publiek", "Semi-publiek"],
-            disabled=not show_chargers,
-        )
+
+        with st.expander("📍 Stoplocaties", expanded=True):
+            show_heatmap = st.checkbox("Stop-heatmap", value=True)
+            show_markers = st.checkbox("Drukste stop-locaties", value=False)
+            marker_top_n = st.slider(
+                "Aantal locaties (top N op aantal stops)",
+                min_value=50,
+                max_value=5000,
+                value=250,
+                step=50,
+                disabled=not show_markers,
+                help=(
+                    "Groepeert per adres, telt het totaal aantal stops daar, "
+                    "en toont de top N. Default 250 = de vaakst bezochte locaties."
+                ),
+            )
+
+        with st.expander("🛣️ Wegvlakken", expanded=False):
+            show_routes = st.checkbox(
+                "Routelijnen (rechte lijnen tussen stops)",
+                value=False,
+                help="Eenvoudige stop-naar-stop verbindingen, geen wegennet.",
+            )
+            show_road_heatmap = st.checkbox(
+                "Wegvlak-heatmap (OSRM, alle trips)",
+                value=False,
+                disabled=schema != "trip_stop",
+                help=(
+                    "Basislaag: gradient blauw → oranje → donkerrood toont hoe vaak "
+                    "elk wegvlak gebruikt wordt. Donkerrood = drukste corridors."
+                    if schema == "trip_stop"
+                    else "Niet beschikbaar in trip-summary modus."
+                ),
+            )
+            show_top_x_overlay = st.checkbox(
+                "→ Highlight top X% drukste",
+                value=False,
+                disabled=not show_road_heatmap,
+                help=(
+                    "Bovenop de heatmap: paarse lijnen tonen de drukst bereden "
+                    "wegvlakken (gerangschikt op aantal keer bereden, niet op "
+                    "unieke wagens). Handig om de allerdrukste delen te benoemen."
+                ),
+            )
+            road_threshold = st.slider(
+                "Min. aantal unieke wagens per wegvlak",
+                min_value=1,
+                max_value=100,
+                value=10,
+                step=1,
+                disabled=not show_road_heatmap,
+                help=(
+                    "Een 'wegvlak' is een stukje weg van ca. 50-200 m "
+                    "(OSRM road-graph edge). Heel Nederland heeft >500.000 "
+                    "wegvlakken in deze data. Wegvlakken met minder unieke "
+                    "wagens dan deze drempel worden verborgen."
+                ),
+            )
+            road_show_pct = st.slider(
+                "Top X% (highlighted)",
+                min_value=1,
+                max_value=25,
+                value=1,
+                step=1,
+                disabled=not show_top_x_overlay,
+                help=(
+                    "Van alle wegvlakken boven de drempel: highlight de drukst "
+                    "bereden top X% in paars. Sortering op aantal keer bereden "
+                    "(n_passes), niet op unieke wagens. "
+                    "1% bij ~500k wegvlakken = 5.000 lijnen (= goed leesbaar). "
+                    "Hogere percentages = meer detail, maar trager."
+                ),
+            )
+
+        with st.expander("⚡ Laadlocaties", expanded=False):
+            show_chargers = st.checkbox(
+                "Geverifieerde HDV-laadlocaties",
+                value=False,
+                help=(
+                    "Handmatig geverifieerde laadlocaties die toegankelijk zijn "
+                    "voor vrachtwagens (244 locaties)."
+                ),
+            )
+            charger_min_kw = st.slider(
+                "Min. laadvermogen (kW)",
+                min_value=0,
+                max_value=400,
+                value=150,
+                step=50,
+                disabled=not show_chargers,
+            )
+            charger_only_dedicated = st.checkbox(
+                "Alleen dedicated voor HDV",
+                value=False,
+                disabled=not show_chargers,
+                help="Alleen locaties die exclusief voor vrachtwagens zijn ingericht.",
+            )
+            charger_access = st.multiselect(
+                "Toegankelijkheid",
+                ["Publiek", "Semi-publiek", "Privaat"],
+                default=["Publiek", "Semi-publiek"],
+                disabled=not show_chargers,
+            )
 
     if isinstance(date_range, tuple) and len(date_range) == 2:
         dr = (pd.Timestamp(date_range[0]), pd.Timestamp(date_range[1]))
