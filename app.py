@@ -500,12 +500,51 @@ def _render_simulation(stops: pd.DataFrame) -> None:
         )
 
 
+def _build_excel_export(
+    filters_info: dict,
+    stops_df: pd.DataFrame,
+    corridors_df: pd.DataFrame,
+    edges_df: pd.DataFrame | None,
+) -> bytes:
+    """Build multi-sheet Excel met filters + top-tabellen voor PostNL."""
+    import io
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        pd.DataFrame(
+            [{"parameter": k, "waarde": v} for k, v in filters_info.items()]
+        ).to_excel(writer, sheet_name="Filters", index=False)
+        if not stops_df.empty:
+            stops_df.to_excel(writer, sheet_name="Top stop-locaties", index=False)
+        if not corridors_df.empty:
+            corridors_df.to_excel(writer, sheet_name="Top corridors", index=False)
+        if edges_df is not None and not edges_df.empty:
+            edges_df.to_excel(writer, sheet_name="Top wegvlakken", index=False)
+    buf.seek(0)
+    return buf.read()
+
+
+_HOTSPOTS_COLUMN_LABELS = {
+    "lat_round": "Lat (~110 m raster)",
+    "lon_round": "Lon (~110 m raster)",
+    "locatie_naam": "Locatienaam",
+    "adres": "Adres",
+    "n_stops": "Keer bezocht",
+    "n_wagens": "Unieke wagens",
+    "n_trips": "Unieke trips",
+    "totale_standtijd_uur": "Totale rijduur (uur)",
+    "gem_standtijd_min": "Gem. rijduur (min)",
+    "afstand_lader_km": "Afstand naar lader (km)",
+    "maps": "Kaart",
+}
+
+
 def _render_dashboard(
     stops: pd.DataFrame,
     chargers_df: pd.DataFrame,
     road_threshold: int,
 ) -> None:
-    """Dashboard-tab: KPI's, top-20 stops, top-20 wegvlakken, trends."""
+    """Dashboard-tab: KPI's, top stops, top corridors, top wegvlakken, trends."""
     st.subheader("Kern-KPI's")
     total_km = float(stops["afstand_km"].fillna(0).sum())
     avg_trip_km = (
@@ -528,144 +567,234 @@ def _render_dashboard(
 
     st.divider()
 
-    col_left, col_right = st.columns([1, 1])
+    # === Top stop-locaties ===
+    st.subheader("Top 50 stop-locaties (op aantal unieke wagens)")
+    st.caption(
+        "Geclusterd per ~110 m grid-cel (lat/lon afgerond). "
+        "**Keer bezocht** = aantal stops in totaal · "
+        "**Unieke wagens** = aantal verschillende vrachtwagens dat hier kwam · "
+        "**Unieke trips** = aantal verschillende ritten."
+    )
+    hotspots = rank_hotspots(stops)
+    if not chargers_df.empty:
+        hotspots = add_nearest_charger_distance(hotspots, chargers_df)
+    top_stops = hotspots.head(50).copy()
+    top_stops["maps"] = top_stops.apply(
+        lambda r: f"https://www.google.com/maps?q={r['lat_round']},{r['lon_round']}",
+        axis=1,
+    )
+    st.dataframe(
+        top_stops,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            **{
+                col: st.column_config.Column(label)
+                for col, label in _HOTSPOTS_COLUMN_LABELS.items()
+                if col != "maps"
+            },
+            "maps": st.column_config.LinkColumn(
+                "Kaart", display_text="📍 Open"
+            ),
+        },
+    )
+    st.download_button(
+        "Download top stop-locaties als CSV",
+        data=hotspots.to_csv(index=False).encode("utf-8"),
+        file_name="top_stop_locaties.csv",
+        mime="text/csv",
+        key="dl_hotspots",
+    )
 
-    with col_left:
-        st.subheader("Top 20 stop-locaties")
-        hotspots = rank_hotspots(stops)
-        if not chargers_df.empty:
-            hotspots = add_nearest_charger_distance(hotspots, chargers_df)
-        top_stops = hotspots.head(20).copy()
-        top_stops["maps"] = top_stops.apply(
-            lambda r: f"https://www.google.com/maps?q={r['lat_round']},{r['lon_round']}",
-            axis=1,
+    st.divider()
+
+    # === Top corridors ===
+    st.subheader(f"Top 20 corridors (≥ {road_threshold} wagens, gesorteerd op lengte)")
+    st.caption(
+        "Aaneengesloten wegvlakken boven de drempel worden samengevoegd tot "
+        "één corridor. Drempel aanpassen via sidebar 'Min. aantal unieke wagens'."
+    )
+    segs = unique_segments(stops)
+    cached_routes, missing = load_cached_routes(segs)
+    corridors_df_export = pd.DataFrame()
+    edges_df_export: pd.DataFrame | None = None
+    if missing > 0 and not cached_routes:
+        st.info(
+            f"Wegvlak-data nog niet gecached ({missing}/{len(segs)} segmenten). "
+            "Zet op de Kaart-tab eenmalig **Routelijnen → volg wegennet** aan."
+        )
+    else:
+        edges = compute_weighted_edges(stops, cached_routes)
+        if missing:
+            st.caption(
+                f"⚠️ {missing}/{len(segs)} segmenten ontbreken in cache — "
+                f"cijfers zijn op basis van {len(segs) - missing} gecachede segmenten."
+            )
+        corridors = compute_corridors(edges, threshold=road_threshold)
+        top_corridors = corridors[:20]
+        if not top_corridors:
+            st.warning(
+                f"Geen corridors met ≥ {road_threshold} wagens. Zet de drempel lager."
+            )
+        else:
+            centers = [c["center"] for c in top_corridors]
+            with st.spinner("Wegnamen opzoeken (gecached)..."):
+                names = reverse_geocode(centers)
+
+            mini = folium.Map(
+                location=[52.1, 5.3], zoom_start=7, tiles="OpenStreetMap"
+            )
+            rows = []
+            for rank, (corridor, (lat_c, lon_c)) in enumerate(
+                zip(top_corridors, centers), start=1
+            ):
+                info = names.get(
+                    (round(lat_c, 4), round(lon_c, 4)),
+                    {"road": "", "town": "", "display": ""},
+                )
+                weg = info["road"] or "(onbekend)"
+                plaats = info["town"] or ""
+                for p1, p2, _ in corridor["edges"]:
+                    folium.PolyLine(
+                        [p1, p2], color="#dc2626", weight=5, opacity=0.85
+                    ).add_to(mini)
+                folium.Marker(
+                    location=[lat_c, lon_c],
+                    icon=folium.DivIcon(
+                        html=(
+                            f'<div style="background:#dc2626;color:white;'
+                            f"border:2px solid white;border-radius:50%;"
+                            f"width:26px;height:26px;text-align:center;"
+                            f"line-height:22px;font-weight:bold;"
+                            f'font-size:12px;">{rank}</div>'
+                        )
+                    ),
+                    tooltip=(
+                        f"#{rank} — {weg}, {plaats} · "
+                        f"{corridor['length_km']:.1f} km · "
+                        f"max {corridor['max_n']} wagens"
+                    ),
+                ).add_to(mini)
+                rows.append(
+                    {
+                        "#": rank,
+                        "lengte_km": round(corridor["length_km"], 2),
+                        "max_wagens": corridor["max_n"],
+                        "med_wagens": corridor["median_n"],
+                        "wegnaam": weg,
+                        "plaats": plaats,
+                        "lat": round(lat_c, 5),
+                        "lon": round(lon_c, 5),
+                        "maps": f"https://www.google.com/maps?q={lat_c},{lon_c}",
+                    }
+                )
+            st_folium(
+                mini, height=320, use_container_width=True, returned_objects=[]
+            )
+            corridors_df_export = pd.DataFrame(rows)
+            st.dataframe(
+                corridors_df_export,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "lengte_km": st.column_config.Column("Lengte (km)"),
+                    "max_wagens": st.column_config.Column("Max wagens"),
+                    "med_wagens": st.column_config.Column("Mediaan wagens"),
+                    "maps": st.column_config.LinkColumn(
+                        "Kaart", display_text="🛣️ Open"
+                    ),
+                },
+            )
+            st.download_button(
+                "Download top corridors als CSV",
+                data=corridors_df_export.to_csv(index=False).encode("utf-8"),
+                file_name="top_corridors.csv",
+                mime="text/csv",
+                key="dl_corridors",
+            )
+
+        # Top wegvlakken (raw edges) — table
+        st.divider()
+        st.subheader("Top 100 drukste wegvlakken")
+        st.caption(
+            "Een wegvlak = ~50-200 m stuk weg uit het OSRM-wegennet. "
+            "**Unieke wagens** = aantal verschillende vrachtwagens dat dit "
+            "wegvlak gebruikt heeft. (Aantal-keer-bereden komt in volgende update.)"
+        )
+        edges_top = sorted(edges, key=lambda e: e[2], reverse=True)[:100]
+        edges_df_export = pd.DataFrame(
+            [
+                {
+                    "rank": i + 1,
+                    "lat1": p1[0],
+                    "lon1": p1[1],
+                    "lat2": p2[0],
+                    "lon2": p2[1],
+                    "n_unieke_wagens": n,
+                    "lat_midden": round((p1[0] + p2[0]) / 2, 6),
+                    "lon_midden": round((p1[1] + p2[1]) / 2, 6),
+                    "maps": f"https://www.google.com/maps?q={(p1[0] + p2[0]) / 2},{(p1[1] + p2[1]) / 2}",
+                }
+                for i, (p1, p2, n) in enumerate(edges_top)
+            ]
         )
         st.dataframe(
-            top_stops,
+            edges_df_export,
             use_container_width=True,
             hide_index=True,
             column_config={
                 "maps": st.column_config.LinkColumn(
-                    "Kaart", display_text="📍 Open"
+                    "Kaart", display_text="🛣️ Open"
                 ),
             },
         )
         st.download_button(
-            "Download hotspots als CSV",
-            data=hotspots.to_csv(index=False).encode("utf-8"),
-            file_name="hotspots.csv",
+            "Download top wegvlakken als CSV",
+            data=edges_df_export.to_csv(index=False).encode("utf-8"),
+            file_name="top_wegvlakken.csv",
             mime="text/csv",
-            key="dl_hotspots",
+            key="dl_wegvlakken",
         )
 
-    with col_right:
-        st.subheader(f"Top 20 corridors (≥ {road_threshold} wagens, gesorteerd op lengte)")
-        st.caption(
-            "Aaneengesloten wegvlakken boven de drempel worden samengevoegd "
-            "tot één corridor. Drempel aanpassen via sidebar."
-        )
-        segs = unique_segments(stops)
-        cached_routes, missing = load_cached_routes(segs)
-        if missing > 0 and not cached_routes:
-            st.info(
-                f"Wegvlak-data nog niet gecached ({missing}/{len(segs)} segmenten). "
-                "Zet op de Kaart-tab eenmalig **Routelijnen → volg wegennet** aan "
-                "om deze tabel te vullen."
-            )
-        else:
-            edges = compute_weighted_edges(stops, cached_routes)
-            if missing:
-                st.caption(
-                    f"⚠️ {missing}/{len(segs)} segmenten ontbreken in cache — "
-                    f"cijfers zijn op basis van {len(segs) - missing} gecachede segmenten."
-                )
-            corridors = compute_corridors(edges, threshold=road_threshold)
-            top_corridors = corridors[:20]
-            if not top_corridors:
-                st.warning(
-                    f"Geen corridors met ≥ {road_threshold} wagens. "
-                    "Zet de drempel lager."
-                )
-            else:
-                centers = [c["center"] for c in top_corridors]
-                with st.spinner(
-                    "Wegnamen opzoeken (eerste keer ~25 s, daarna cache)..."
-                ):
-                    rev_progress = st.progress(0.0)
+    st.divider()
 
-                    def _rcb(i: int, total: int) -> None:
-                        rev_progress.progress(min(1.0, i / max(total, 1)))
-
-                    names = reverse_geocode(centers, progress_cb=_rcb)
-                    rev_progress.empty()
-
-                mini = folium.Map(
-                    location=[52.1, 5.3], zoom_start=7, tiles="OpenStreetMap"
-                )
-                rows = []
-                for rank, (corridor, (lat_c, lon_c)) in enumerate(
-                    zip(top_corridors, centers), start=1
-                ):
-                    info = names.get(
-                        (round(lat_c, 4), round(lon_c, 4)),
-                        {"road": "", "town": "", "display": ""},
-                    )
-                    weg = info["road"] or "(onbekend)"
-                    plaats = info["town"] or ""
-                    for p1, p2, _ in corridor["edges"]:
-                        folium.PolyLine(
-                            [p1, p2], color="#dc2626", weight=5, opacity=0.85
-                        ).add_to(mini)
-                    folium.Marker(
-                        location=[lat_c, lon_c],
-                        icon=folium.DivIcon(
-                            html=(
-                                f'<div style="background:#dc2626;color:white;'
-                                f"border:2px solid white;border-radius:50%;"
-                                f"width:26px;height:26px;text-align:center;"
-                                f"line-height:22px;font-weight:bold;"
-                                f'font-size:12px;">{rank}</div>'
-                            )
-                        ),
-                        tooltip=(
-                            f"#{rank} — {weg}, {plaats} · "
-                            f"{corridor['length_km']:.1f} km · "
-                            f"max {corridor['max_n']} wagens"
-                        ),
-                    ).add_to(mini)
-                    rows.append(
-                        {
-                            "#": rank,
-                            "lengte_km": round(corridor["length_km"], 2),
-                            "max_wagens": corridor["max_n"],
-                            "med_wagens": corridor["median_n"],
-                            "wegnaam": weg,
-                            "plaats": plaats,
-                            "maps": f"https://www.google.com/maps?q={lat_c},{lon_c}",
-                        }
-                    )
-                st_folium(
-                    mini, height=300, use_container_width=True, returned_objects=[]
-                )
-
-                edges_df = pd.DataFrame(rows)
-                st.dataframe(
-                    edges_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "maps": st.column_config.LinkColumn(
-                            "Kaart", display_text="🛣️ Open"
-                        ),
-                    },
-                )
-                st.download_button(
-                    "Download corridors als CSV",
-                    data=edges_df.to_csv(index=False).encode("utf-8"),
-                    file_name="corridors_top20.csv",
-                    mime="text/csv",
-                    key="dl_corridors",
-                )
+    # === Excel export — alles in één bestand ===
+    st.subheader("Excel-export voor PostNL")
+    st.caption(
+        "Bevat de huidige selectie als 4 tabbladen: Filters, Top stop-locaties, "
+        "Top corridors, Top wegvlakken."
+    )
+    filters_info = {
+        "Modus": stops.get("acties", pd.Series()).iloc[0]
+        if not stops.empty and "acties" in stops.columns
+        else "",
+        "Totaal stops": f"{len(stops):,}".replace(",", "."),
+        "Unieke trips": f"{stops['trip_id'].nunique():,}".replace(",", "."),
+        "Unieke wagens": f"{stops['wagencode'].nunique():,}".replace(",", "."),
+        "Datum vanaf": (
+            str(stops["trip_date"].min().date()) if not stops.empty else ""
+        ),
+        "Datum tot": (
+            str(stops["trip_date"].max().date()) if not stops.empty else ""
+        ),
+        "Min. wagens per wegvlak": road_threshold,
+        "Vervoerder-types": ", ".join(
+            sorted(stops["vervoerder_type"].dropna().unique().tolist())
+        ),
+    }
+    excel_bytes = _build_excel_export(
+        filters_info,
+        top_stops,
+        corridors_df_export,
+        edges_df_export,
+    )
+    st.download_button(
+        "Download volledig Excel-rapport",
+        data=excel_bytes,
+        file_name="postnl_route_analyse_export.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="dl_excel_full",
+    )
 
     st.divider()
 
