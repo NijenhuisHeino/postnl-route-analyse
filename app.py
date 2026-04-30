@@ -620,6 +620,42 @@ def _render_dashboard(
         lambda r: f"https://www.google.com/maps?q={r['lat_round']},{r['lon_round']}",
         axis=1,
     )
+
+    if not top_stops.empty:
+        mini_stops = folium.Map(
+            location=[52.1, 5.3], zoom_start=7, tiles="OpenStreetMap"
+        )
+        max_wagens_top = int(top_stops["n_wagens"].max())
+        for rank, row in enumerate(top_stops.itertuples(index=False), start=1):
+            radius = 6 + 16 * (int(row.n_wagens) / max(max_wagens_top, 1))
+            popup_html = (
+                f"<b>#{rank} — {row.locatie_naam or '(onbekend)'}</b><br>"
+                f"{row.adres or ''}<br>"
+                f"🚛 <b>{int(row.n_wagens)} unieke wagens</b><br>"
+                f"📍 {int(row.n_stops):,} keer bezocht · {int(row.n_trips):,} unieke trips<br>"
+                f"⏱️ Totale rijduur: {row.totale_standtijd_uur:,.0f} uur · "
+                f"gemiddeld {row.gem_standtijd_min:.0f} min/bezoek"
+            ).replace(",", ".")
+            folium.CircleMarker(
+                location=[row.lat_round, row.lon_round],
+                radius=radius,
+                color="#dc2626",
+                weight=1.5,
+                fill=True,
+                fill_color="#dc2626",
+                fill_opacity=0.55,
+                popup=folium.Popup(popup_html, max_width=320),
+                tooltip=f"#{rank} — {int(row.n_wagens)} wagens, {int(row.n_stops)} bezoeken",
+            ).add_to(mini_stops)
+        st_folium(
+            mini_stops, height=420, use_container_width=True, returned_objects=[]
+        )
+        st.caption(
+            "Rode bollen = top 50 stop-locaties. Bolgrootte ∝ aantal unieke "
+            "wagens. **Klik op een bol** voor adres + statistieken. "
+            "Zo zie je in één oogopslag de geografische verdeling (oost/noord/west)."
+        )
+
     st.dataframe(
         top_stops,
         use_container_width=True,
