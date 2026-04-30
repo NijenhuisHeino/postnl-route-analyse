@@ -665,7 +665,8 @@ def _render_dashboard(
                 )
                 weg = info["road"] or "(onbekend)"
                 plaats = info["town"] or ""
-                for p1, p2, _ in corridor["edges"]:
+                for edge_tuple in corridor["edges"]:
+                    p1, p2 = edge_tuple[0], edge_tuple[1]
                     folium.PolyLine(
                         [p1, p2], color="#dc2626", weight=5, opacity=0.85
                     ).add_to(mini)
@@ -1146,23 +1147,30 @@ def main() -> None:
                 "knooppunten — beste indicatie voor kandidaat-laadlocaties."
             ),
         )
-        show_routes = st.checkbox("Routelijnen", value=False)
-        use_road_routes = st.checkbox(
-            "→ volg wegennet (OSRM)",
+        show_routes = st.checkbox(
+            "Routelijnen (rechte lijnen tussen stops)",
             value=False,
-            disabled=not show_routes,
-            help="Haalt werkelijke wegroute per segment op via OSRM en cachet lokaal. Eerste keer traag.",
+            help="Eenvoudige stop-naar-stop verbindingen, geen wegennet.",
         )
         show_road_heatmap = st.checkbox(
             "Wegvlak-heatmap (OSRM, alle trips)",
             value=False,
             disabled=schema != "trip_stop",
             help=(
-                "Legt alle trip-routes op elkaar en telt unieke wagens per "
-                "wegvak (~110 m grid). Onthult de drukst bereden corridors. "
-                "Eerste keer traag; daarna gecached."
+                "Basislaag: gradient blauw → oranje → donkerrood toont hoe vaak "
+                "elk wegvlak gebruikt wordt. Donkerrood = drukste corridors."
                 if schema == "trip_stop"
                 else "Niet beschikbaar in trip-summary modus."
+            ),
+        )
+        show_top_x_overlay = st.checkbox(
+            "→ Highlight top X% drukste",
+            value=False,
+            disabled=not show_road_heatmap,
+            help=(
+                "Bovenop de heatmap: paarse lijnen tonen de drukst bereden "
+                "wegvlakken (gerangschikt op aantal keer bereden, niet op "
+                "unieke wagens). Handig om de allerdrukste delen te benoemen."
             ),
         )
         road_threshold = st.slider(
@@ -1171,7 +1179,7 @@ def main() -> None:
             max_value=100,
             value=10,
             step=1,
-            disabled=not (show_road_heatmap or (show_routes and use_road_routes)),
+            disabled=not show_road_heatmap,
             help=(
                 "Een 'wegvlak' is een stukje weg van ca. 50-200 m "
                 "(OSRM road-graph edge). Heel Nederland heeft >500.000 "
@@ -1180,15 +1188,16 @@ def main() -> None:
             ),
         )
         road_show_pct = st.slider(
-            "Toon top X% drukste wegvlakken",
+            "Top X% (highlighted)",
             min_value=1,
             max_value=25,
             value=1,
             step=1,
-            disabled=not (show_routes and use_road_routes),
+            disabled=not show_top_x_overlay,
             help=(
-                "Van alle wegvlakken boven de drempel: toon alleen de "
-                "drukst bereden top X%. Voorkomt dat de kaart dichtslibt. "
+                "Van alle wegvlakken boven de drempel: highlight de drukst "
+                "bereden top X% in paars. Sortering op aantal keer bereden "
+                "(n_passes), niet op unieke wagens. "
                 "1% bij ~500k wegvlakken = 5.000 lijnen (= goed leesbaar). "
                 "Hogere percentages = meer detail, maar trager."
             ),
@@ -1354,7 +1363,7 @@ def main() -> None:
                 ).add_to(cluster)
 
         routes: dict = {}
-        need_osrm = (show_routes and use_road_routes) or show_road_heatmap
+        need_osrm = show_top_x_overlay or show_road_heatmap
         if need_osrm:
             segs = unique_segments(stops)
             cached_routes, missing_n = load_cached_routes(segs)
@@ -1407,8 +1416,8 @@ def main() -> None:
 
         cache_variant = _detect_cache_variant(stops, df)
 
-        if show_routes and use_road_routes:
-            edges_df: pd.DataFrame | None = None
+        edges_df: pd.DataFrame | None = None
+        if show_top_x_overlay or show_road_heatmap:
             if cache_variant:
                 edges_df = _load_cached_weighted_edges_df(cache_variant)
                 if edges_df is not None and not edges_df.empty:
@@ -1433,39 +1442,44 @@ def main() -> None:
                         for e in edges
                     ]
                 )
-            if edges_df is not None and not edges_df.empty:
-                max_n = int(edges_df["n_wagens"].max())
-                filtered = edges_df[edges_df["n_wagens"] >= road_threshold]
-                if filtered.empty:
-                    st.warning(
-                        f"Geen wegvlak heeft ≥ {road_threshold} unieke wagens "
-                        f"(max in dataset = {max_n}). Zet de drempel lager."
+
+        if show_top_x_overlay and edges_df is not None and not edges_df.empty:
+            max_passes = int(edges_df["n_passes"].max())
+            filtered = edges_df[edges_df["n_wagens"] >= road_threshold]
+            if filtered.empty:
+                st.warning(
+                    f"Geen wegvlak heeft ≥ {road_threshold} unieke wagens. "
+                    "Zet de drempel lager."
+                )
+            else:
+                target_n = max(50, int(len(filtered) * road_show_pct / 100))
+                if len(filtered) > target_n:
+                    top = filtered.nlargest(target_n, "n_passes")
+                    st.info(
+                        f"ℹ️ {len(filtered):,} wegvlakken boven drempel · "
+                        f"top {road_show_pct}% (op aantal keer bereden) "
+                        f"gehighlight = {target_n:,} lijnen."
+                        .replace(",", ".")
                     )
                 else:
-                    target_n = max(50, int(len(filtered) * road_show_pct / 100))
-                    if len(filtered) > target_n:
-                        top = filtered.nlargest(target_n, "n_wagens")
-                        st.info(
-                            f"ℹ️ {len(filtered):,} wegvlakken boven drempel · "
-                            f"top {road_show_pct}% getekend = {target_n:,} lijnen."
-                            .replace(",", ".")
-                        )
-                    else:
-                        top = filtered
-                    denom = max(1, max_n - road_threshold)
-                    for r in top.itertuples(index=False):
-                        n = int(r.n_wagens)
-                        t = (n - road_threshold) / denom
-                        color = lerp_hex("#ddd6fe", "#4c1d95", t)
-                        weight = 1.2 + 4.8 * t
-                        folium.PolyLine(
-                            [(r.lat1, r.lon1), (r.lat2, r.lon2)],
-                            color=color,
-                            weight=weight,
-                            opacity=0.85,
-                            tooltip=f"{n} unieke wagens",
-                        ).add_to(fmap)
-        elif show_routes:
+                    top = filtered
+                min_passes = int(top["n_passes"].min())
+                denom = max(1, max_passes - min_passes)
+                for r in top.itertuples(index=False):
+                    n_p = int(r.n_passes)
+                    n_w = int(r.n_wagens)
+                    t = (n_p - min_passes) / denom
+                    color = lerp_hex("#ddd6fe", "#4c1d95", t)
+                    weight = 2.0 + 4.5 * t
+                    folium.PolyLine(
+                        [(r.lat1, r.lon1), (r.lat2, r.lon2)],
+                        color=color,
+                        weight=weight,
+                        opacity=0.85,
+                        tooltip=f"{n_p}× bereden door {n_w} wagens",
+                    ).add_to(fmap)
+
+        if show_routes:
             TRIP_CAP = 2000
             trip_groups = list(stops.groupby(["wagencode", "trip_date", "trip_id"]))
             if len(trip_groups) > TRIP_CAP:
@@ -1563,22 +1577,22 @@ def main() -> None:
                  'background:#1f77b4;border:1px solid #1f77b4;opacity:0.6;"></span>',
                  "Drukste stop-locaties (cirkelgrootte = aantal wagens)")
             )
-        if show_routes and use_road_routes:
-            legend_items.append(
-                ('<span style="background:linear-gradient(90deg,#ddd6fe,#4c1d95);'
-                 'display:inline-block;width:36px;height:8px;border-radius:2px;"></span>',
-                 "Wegvlakken (top X%) — donkerder = meer unieke wagens")
-            )
-        elif show_routes:
-            legend_items.append(
-                ('<span style="background:#6b21a8;display:inline-block;width:36px;height:3px;"></span>',
-                 "Routelijnen (rechte lijnen tussen stops)")
-            )
         if show_road_heatmap:
             legend_items.append(
                 ('<span style="background:linear-gradient(90deg,#1e3a8a,#3b82f6,#f59e0b,#dc2626,#7f1d1d);'
                  'display:inline-block;width:36px;height:10px;border-radius:2px;"></span>',
                  "Wegvlak-heatmap (donkerrood = drukste corridors)")
+            )
+        if show_top_x_overlay:
+            legend_items.append(
+                ('<span style="background:linear-gradient(90deg,#ddd6fe,#4c1d95);'
+                 'display:inline-block;width:36px;height:8px;border-radius:2px;"></span>',
+                 "Top X% drukste wegvlakken (donkerder = vaker bereden)")
+            )
+        if show_routes:
+            legend_items.append(
+                ('<span style="background:#6b21a8;display:inline-block;width:36px;height:3px;"></span>',
+                 "Routelijnen (rechte lijnen tussen stops)")
             )
         if show_chargers and not chargers_df.empty:
             legend_items.append(
