@@ -26,12 +26,14 @@ def _haversine_km(p1: tuple[float, float], p2: tuple[float, float]) -> float:
     return 2 * r * math.asin(math.sqrt(a))
 
 
-def _segment_wagen_sets(
+def _segment_aggregates(
     stops: pd.DataFrame, round_decimals: int = 5
-) -> dict[tuple, set[str]]:
-    """Vectoriseerde aggregatie: per uniek wegvlak (segment-key) -> set wagencodes.
+) -> dict[tuple, dict]:
+    """Vectoriseerde aggregatie: per uniek wegvlak (segment-key) ->
+    {'wagens': set[str], 'n_passes': int}.
 
-    Veel sneller dan per-trip iteratie: 1 pandas groupby in plaats van 272k loops.
+    n_passes = totaal aantal keer dat dit segment bereden is (kan dezelfde
+    wagen meerdere keren tellen). wagens = aantal unieke wagens.
     """
     df = stops.sort_values(
         ["wagencode", "trip_date", "trip_id", "stop_seq"], kind="stable"
@@ -49,12 +51,22 @@ def _segment_wagen_sets(
         lon2=pairs["next_lon"].round(round_decimals),
     )
 
-    seg_wagens: dict[tuple, set[str]] = {}
+    seg_data: dict[tuple, dict] = {}
     for (lat1, lon1, lat2, lon2), g in pairs.groupby(
         ["lat1", "lon1", "lat2", "lon2"], sort=False
     ):
-        seg_wagens[(lat1, lon1, lat2, lon2)] = set(g["wagencode"].astype(str).unique())
-    return seg_wagens
+        seg_data[(lat1, lon1, lat2, lon2)] = {
+            "wagens": set(g["wagencode"].astype(str).unique()),
+            "n_passes": int(len(g)),
+        }
+    return seg_data
+
+
+def _segment_wagen_sets(
+    stops: pd.DataFrame, round_decimals: int = 5
+) -> dict[tuple, set[str]]:
+    """Backwards-compat: alleen wagen-sets, voor precompute_aggregations chunked-flow."""
+    return {k: v["wagens"] for k, v in _segment_aggregates(stops, round_decimals).items()}
 
 
 def compute_road_heatmap_points(
@@ -67,10 +79,11 @@ def compute_road_heatmap_points(
     Vectoriseerd: aggregeert eerst per uniek segment (46k), dan polyline-walk.
     round_decimals=3 ≈ 110 m grid.
     """
-    seg_wagens = _segment_wagen_sets(stops)
+    seg_data = _segment_aggregates(stops)
 
     cell_wagens: dict[tuple[float, float], set[str]] = {}
-    for seg_key, wagens in seg_wagens.items():
+    for seg_key, info in seg_data.items():
+        wagens = info["wagens"]
         poly = routes.get(seg_key)
         if not poly:
             poly = [(seg_key[0], seg_key[1]), (seg_key[2], seg_key[3])]
@@ -99,16 +112,19 @@ def compute_weighted_edges(
     stops: pd.DataFrame,
     routes: dict,
     round_decimals: int = 6,
-) -> list[tuple[tuple[float, float], tuple[float, float], int]]:
-    """Per consecutief paar punten op alle OSRM trip-polylines: tel unieke wagens.
+) -> list[tuple[tuple[float, float], tuple[float, float], int, int]]:
+    """Per consecutief paar punten op alle OSRM trip-polylines: tel unieke wagens
+    en totaal aantal keer bereden.
 
-    Retourneert [(p1, p2, n_unique_wagens), ...]. Richting blijft behouden.
-    Vectoriseerd: aggregeert eerst per uniek segment (46k), dan polyline-walk.
+    Retourneert [(p1, p2, n_unique_wagens, n_passes), ...]. Richting blijft
+    behouden. Vectoriseerd: aggregeert eerst per uniek segment, dan polyline-walk.
     """
-    seg_wagens = _segment_wagen_sets(stops)
+    seg_data = _segment_aggregates(stops)
 
-    edge_wagens: dict[tuple, set[str]] = {}
-    for seg_key, wagens in seg_wagens.items():
+    edge_data: dict[tuple, dict] = {}
+    for seg_key, info in seg_data.items():
+        wagens = info["wagens"]
+        n_passes = info["n_passes"]
         poly = routes.get(seg_key)
         if not poly:
             poly = [(seg_key[0], seg_key[1]), (seg_key[2], seg_key[3])]
@@ -120,9 +136,14 @@ def compute_weighted_edges(
             )
             if p1 == p2:
                 continue
-            edge_wagens.setdefault((p1, p2), set()).update(wagens)
+            d = edge_data.setdefault((p1, p2), {"wagens": set(), "n_passes": 0})
+            d["wagens"].update(wagens)
+            d["n_passes"] += n_passes
 
-    return [(p1, p2, len(w)) for (p1, p2), w in edge_wagens.items()]
+    return [
+        (p1, p2, len(d["wagens"]), d["n_passes"])
+        for (p1, p2), d in edge_data.items()
+    ]
 
 
 def compute_corridors(
@@ -136,7 +157,8 @@ def compute_corridors(
     gesorteerd op length_km (langst eerst).
     """
     merged: dict[tuple, int] = {}
-    for p1, p2, n in edges:
+    for edge in edges:
+        p1, p2, n = edge[0], edge[1], edge[2]
         if n < threshold:
             continue
         key = (p1, p2) if p1 < p2 else (p2, p1)

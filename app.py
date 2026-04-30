@@ -277,11 +277,15 @@ def _detect_schema_cached(path: str, mtime: float) -> tuple[str, str] | None:
 
 @st.cache_data(show_spinner=False)
 def _load_cached_weighted_edges_df(variant: str) -> pd.DataFrame | None:
-    """Laad pre-computed weighted edges per variant als DataFrame."""
+    """Laad pre-computed weighted edges per variant als DataFrame.
+    Voegt fallback n_passes-kolom toe als parquet nog van oude schema is."""
     p = Path(f".cache/agg_weighted_edges_{variant}.parquet")
     if not p.exists():
         return None
-    return pd.read_parquet(p)
+    df = pd.read_parquet(p)
+    if "n_passes" not in df.columns:
+        df["n_passes"] = df["n_wagens"]  # fallback voor oude parquet-schema
+    return df
 
 
 @st.cache_data(show_spinner=False)
@@ -719,23 +723,30 @@ def _render_dashboard(
         st.caption(
             "Een wegvlak = ~50-200 m stuk weg uit het OSRM-wegennet. "
             "**Unieke wagens** = aantal verschillende vrachtwagens dat dit "
-            "wegvlak gebruikt heeft. (Aantal-keer-bereden komt in volgende update.)"
+            "wegvlak gebruikt heeft. **Keer bereden** = totaal aantal "
+            "passages (zelfde wagen kan meerdere keren). "
+            "Veel wagens × weinig passages = brede gebruikersgroep · "
+            "weinig wagens × veel passages = vaste route van enkele wagens."
         )
         edges_top = sorted(edges, key=lambda e: e[2], reverse=True)[:100]
         edges_df_export = pd.DataFrame(
             [
                 {
                     "rank": i + 1,
-                    "lat1": p1[0],
-                    "lon1": p1[1],
-                    "lat2": p2[0],
-                    "lon2": p2[1],
-                    "n_unieke_wagens": n,
-                    "lat_midden": round((p1[0] + p2[0]) / 2, 6),
-                    "lon_midden": round((p1[1] + p2[1]) / 2, 6),
-                    "maps": f"https://www.google.com/maps?q={(p1[0] + p2[0]) / 2},{(p1[1] + p2[1]) / 2}",
+                    "lat1": e[0][0],
+                    "lon1": e[0][1],
+                    "lat2": e[1][0],
+                    "lon2": e[1][1],
+                    "n_unieke_wagens": e[2],
+                    "n_keer_bereden": e[3] if len(e) > 3 else e[2],
+                    "passages_per_wagen": round(
+                        (e[3] if len(e) > 3 else e[2]) / max(e[2], 1), 1
+                    ),
+                    "lat_midden": round((e[0][0] + e[1][0]) / 2, 6),
+                    "lon_midden": round((e[0][1] + e[1][1]) / 2, 6),
+                    "maps": f"https://www.google.com/maps?q={(e[0][0] + e[1][0]) / 2},{(e[0][1] + e[1][1]) / 2}",
                 }
-                for i, (p1, p2, n) in enumerate(edges_top)
+                for i, e in enumerate(edges_top)
             ]
         )
         st.dataframe(
@@ -1372,8 +1383,15 @@ def main() -> None:
                     edges = compute_weighted_edges(stops, routes)
                 edges_df = pd.DataFrame(
                     [
-                        {"lat1": p1[0], "lon1": p1[1], "lat2": p2[0], "lon2": p2[1], "n_wagens": n}
-                        for p1, p2, n in edges
+                        {
+                            "lat1": e[0][0],
+                            "lon1": e[0][1],
+                            "lat2": e[1][0],
+                            "lon2": e[1][1],
+                            "n_wagens": e[2],
+                            "n_passes": e[3] if len(e) > 3 else e[2],
+                        }
+                        for e in edges
                     ]
                 )
             if edges_df is not None and not edges_df.empty:
