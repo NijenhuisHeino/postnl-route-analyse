@@ -160,21 +160,47 @@ h3 { font-size: 18px !important; }
   font-family: 'Titillium Web', 'Montserrat', sans-serif !important;
 }
 
-/* Tabs */
+/* Tabs als knoppen */
 .stTabs [data-baseweb="tab-list"] {
-  gap: 4px;
-  border-bottom: 2px solid var(--eta-border-soft);
+  gap: 8px;
+  border-bottom: none;
+  padding-bottom: 4px;
 }
 .stTabs [data-baseweb="tab"] {
   font-weight: 600;
   color: var(--eta-text-subtle);
   font-size: 15px;
+  background: var(--eta-bg-card);
+  border: 1px solid var(--eta-border-soft);
+  border-radius: 12px !important;
+  padding: 10px 22px !important;
+  height: auto !important;
+  transition: all .15s ease;
+}
+.stTabs [data-baseweb="tab"]:hover {
+  background: var(--eta-bg-soft);
+  border-color: var(--eta-border-strong);
+  color: var(--eta-purple-900);
 }
 .stTabs [aria-selected="true"] {
-  color: var(--eta-purple-900) !important;
+  color: #ffffff !important;
+  background: var(--eta-purple-900) !important;
+  border-color: var(--eta-purple-900) !important;
+  box-shadow: 0 4px 12px rgba(46,35,67,0.15);
+}
+.stTabs [aria-selected="true"]:hover {
+  background: var(--eta-purple-900) !important;
+  color: #ffffff !important;
 }
 .stTabs [aria-selected="true"] > div:first-child {
-  border-bottom: 3px solid var(--eta-yellow-500) !important;
+  border-bottom: none !important;
+}
+/* Verberg de blauwe Streamlit-default underline onder tabs */
+.stTabs [data-baseweb="tab-highlight"] {
+  display: none !important;
+}
+.stTabs [data-baseweb="tab-border"] {
+  display: none !important;
 }
 
 /* Buttons — primaire CTA in geel */
@@ -1258,7 +1284,7 @@ def main() -> None:
         return
 
     tab_map, tab_dash, tab_sim = st.tabs(
-        ["🗺️ Kaart", "📊 Dashboard", "🔋 Simulatie"]
+        ["Kaart", "Dashboard", "Simulatie"]
     )
 
     chargers_df = pd.DataFrame()
