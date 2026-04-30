@@ -1,4 +1,4 @@
-"""PostNL truck route heatmap — Streamlit app."""
+"""Truck route heatmap — Streamlit app voor route- en laadlocatie-analyse."""
 
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ DEFAULT_CSV_DIR = (
 )
 
 st.set_page_config(
-    page_title="PostNL Route Heatmap — eTruck Academy",
+    page_title="Rittenkaart — eTruck Academy",
     page_icon="🚚",
     layout="wide",
 )
@@ -267,7 +267,7 @@ div[data-testid="stSidebar"] h3 {
 ETA_HERO = """
 <div class="eta-hero">
   <div class="eyebrow">Route-analyse · Laadinfra</div>
-  <h1>PostNL rittenkaart — hotspots voor externe laadinfrastructuur</h1>
+  <h1>Rittenkaart — hotspots voor externe laadinfrastructuur</h1>
   <p>Analyseer vrachtwagenroutes en stop-locaties om de drukst bereden corridors en kandidaat-locaties voor publieke laadinfrastructuur te vinden. Ondersteunt eigen vervoer en charters.</p>
 </div>
 """
@@ -537,7 +537,7 @@ def _build_excel_export(
     corridors_df: pd.DataFrame,
     edges_df: pd.DataFrame | None,
 ) -> bytes:
-    """Build multi-sheet Excel met filters + top-tabellen voor PostNL."""
+    """Build multi-sheet Excel met filters + top-tabellen voor klant-rapportage."""
     import io
 
     buf = io.BytesIO()
@@ -914,7 +914,7 @@ def _render_dashboard(
     st.divider()
 
     # === Excel export — alles in één bestand ===
-    st.subheader("Excel-export voor PostNL")
+    st.subheader("Excel-export voor klant-rapportage")
     st.caption(
         "Bevat de huidige selectie als 4 tabbladen: Filters, Top stop-locaties, "
         "Top corridors, Top wegvlakken."
@@ -1097,7 +1097,7 @@ def main() -> None:
             if skipped:
                 st.caption(
                     f"ℹ️ {skipped} bestand(en) overgeslagen "
-                    "(geen herkenbare PostNL-export — bv. samenvattingen)."
+                    "(geen herkenbare TRP BI / Rittendata-export — bv. samenvattingen)."
                 )
 
             file_names = [f.name for f in supported]
