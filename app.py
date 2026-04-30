@@ -615,7 +615,8 @@ def _render_dashboard(
     hotspots = rank_hotspots(stops)
     if not chargers_df.empty:
         hotspots = add_nearest_charger_distance(hotspots, chargers_df)
-    top_stops = hotspots.head(50).copy()
+    top_stops = hotspots.head(50).copy().reset_index(drop=True)
+    top_stops.insert(0, "#", top_stops.index + 1)
     top_stops["maps"] = top_stops.apply(
         lambda r: f"https://www.google.com/maps?q={r['lat_round']},{r['lon_round']}",
         axis=1,
@@ -834,7 +835,7 @@ def _render_dashboard(
         edges_df_export = pd.DataFrame(
             [
                 {
-                    "rank": i + 1,
+                    "#": i + 1,
                     "lat_van": round(c["lat1"], 6),
                     "lon_van": round(c["lon1"], 6),
                     "lat_tot": round(c["lat2"], 6),
@@ -851,6 +852,47 @@ def _render_dashboard(
                 for i, c in enumerate(chains_sorted)
             ]
         )
+
+        if chains_sorted:
+            mini_edges = folium.Map(
+                location=[52.1, 5.3], zoom_start=7, tiles="OpenStreetMap"
+            )
+            max_pas = max(c["n_passes"] for c in chains_sorted) or 1
+            for rank, c in enumerate(chains_sorted, start=1):
+                t = c["n_passes"] / max_pas
+                weight = 3 + 6 * t
+                folium.PolyLine(
+                    [(c["lat1"], c["lon1"]), (c["lat2"], c["lon2"])],
+                    color="#dc2626",
+                    weight=weight,
+                    opacity=0.85,
+                    tooltip=(
+                        f"#{rank} — {c['n_passes']:,} passages, "
+                        f"{c['n_wagens']} unieke wagens"
+                    ).replace(",", "."),
+                ).add_to(mini_edges)
+                lat_m = (c["lat1"] + c["lat2"]) / 2
+                lon_m = (c["lon1"] + c["lon2"]) / 2
+                folium.Marker(
+                    location=[lat_m, lon_m],
+                    icon=folium.DivIcon(
+                        html=(
+                            f'<div style="background:#dc2626;color:white;'
+                            f"border:2px solid white;border-radius:50%;"
+                            f"width:22px;height:22px;text-align:center;"
+                            f"line-height:18px;font-weight:bold;"
+                            f'font-size:11px;">{rank}</div>'
+                        )
+                    ),
+                ).add_to(mini_edges)
+            st_folium(
+                mini_edges, height=420, use_container_width=True, returned_objects=[]
+            )
+            st.caption(
+                "Rode lijnen = top 100 wegvlakken (lijndikte ∝ keer bereden). "
+                "Genummerde markers tonen rang in de tabel. Hover voor details."
+            )
+
         st.dataframe(
             edges_df_export,
             use_container_width=True,
