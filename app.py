@@ -34,6 +34,7 @@ from src.road_usage import (
     compute_road_heatmap_points,
     compute_weighted_edges,
     lerp_hex,
+    merge_identical_chains,
     top_road_hotspots,
 )
 from src.routing import (
@@ -574,10 +575,16 @@ def _render_dashboard(
     # === Top stop-locaties ===
     st.subheader("Top 50 stop-locaties (op aantal unieke wagens)")
     st.caption(
-        "Geclusterd per ~110 m grid-cel (lat/lon afgerond). "
-        "**Keer bezocht** = aantal stops in totaal · "
-        "**Unieke wagens** = aantal verschillende vrachtwagens dat hier kwam · "
-        "**Unieke trips** = aantal verschillende ritten."
+        "Geclusterd per ~110 m grid-cel — **Lat / Lon** zijn breedte- en "
+        "lengtegraad van het centrum van die cel.  \n"
+        "**Keer bezocht** = aantal stops totaal · "
+        "**Unieke wagens** = aantal verschillende vrachtwagens · "
+        "**Unieke trips** = aantal verschillende ritten.  \n"
+        "**Totale rijduur (uur)** = som van alle reistijden naar deze locatie "
+        "(één hoge waarde betekent: vaak bezocht én/of vanuit verre afstand). "
+        "**Gem. rijduur (min)** = gemiddelde reistijd per bezoek "
+        "(hoog = trucks rijden lang om hier te komen — interessant voor laadinfra "
+        "want accu komt hier vaak leeg aan)."
     )
     hotspots = rank_hotspots(stops)
     if not chargers_df.empty:
@@ -682,11 +689,15 @@ def _render_dashboard(
                 rows.append(
                     {
                         "#": rank,
-                        "lengte_km": round(corridor["length_km"], 2),
-                        "max_wagens": corridor["max_n"],
-                        "med_wagens": corridor["median_n"],
                         "wegnaam": weg,
                         "plaats": plaats,
+                        "med_passages": int(corridor["median_passes"]),
+                        "max_passages": int(corridor["max_passes"]),
+                        "max_wagens": int(corridor["max_n"]),
+                        "med_wagens": int(corridor["median_n"]),
+                        "spreiding_km": round(corridor["spreiding_km"], 1),
+                        "totale_km": round(corridor["length_km"], 1),
+                        "n_wegvlakken": corridor["n_edges"],
                         "lat": round(lat_c, 5),
                         "lon": round(lon_c, 5),
                         "maps": f"https://www.google.com/maps?q={lat_c},{lon_c}",
@@ -695,15 +706,36 @@ def _render_dashboard(
             st_folium(
                 mini, height=320, use_container_width=True, returned_objects=[]
             )
+            st.caption(
+                "**Sortering:** mediaan aantal passages per wegvlak (drukst eerst).  \n"
+                "**Med./max passages** = aantal keer dat een truck dit wegvlak "
+                "gebruikt heeft (gem./hoogste binnen de corridor).  \n"
+                "**Med./max wagens** = aantal verschillende vrachtwagens.  \n"
+                "**Spreiding (km)** = hemelsbrede afstand tussen verste hoeken "
+                "(realistische 'lengte' van de corridor).  \n"
+                "**Totale km** = som van alle micro-segmenten incl. zijwegen "
+                "(bij een lage drempel verbindt het algoritme hele netwerken — "
+                "dat is dan misleidend hoog)."
+            )
             corridors_df_export = pd.DataFrame(rows)
             st.dataframe(
                 corridors_df_export,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "lengte_km": st.column_config.Column("Lengte (km)"),
+                    "med_passages": st.column_config.Column(
+                        "Med. passages", help="Mediaan keer-bereden per wegvlak"
+                    ),
+                    "max_passages": st.column_config.Column("Max passages"),
                     "max_wagens": st.column_config.Column("Max wagens"),
-                    "med_wagens": st.column_config.Column("Mediaan wagens"),
+                    "med_wagens": st.column_config.Column("Med. wagens"),
+                    "spreiding_km": st.column_config.NumberColumn(
+                        "Spreiding (km)", format="%.1f"
+                    ),
+                    "totale_km": st.column_config.NumberColumn(
+                        "Totale stukjes (km)", format="%.1f"
+                    ),
+                    "n_wegvlakken": st.column_config.Column("Wegvlakken"),
                     "maps": st.column_config.LinkColumn(
                         "Kaart", display_text="🛣️ Open"
                     ),
@@ -717,36 +749,43 @@ def _render_dashboard(
                 key="dl_corridors",
             )
 
-        # Top wegvlakken (raw edges) — table
+        # Top wegvlakken — micro-edges met identieke metrics zijn samengevoegd
         st.divider()
         st.subheader("Top 100 drukste wegvlakken")
         st.caption(
-            "Een wegvlak = ~50-200 m stuk weg uit het OSRM-wegennet. "
-            "**Unieke wagens** = aantal verschillende vrachtwagens dat dit "
-            "wegvlak gebruikt heeft. **Keer bereden** = totaal aantal "
-            "passages (zelfde wagen kan meerdere keren). "
+            "Een wegvlak hier = aaneengesloten stukje weg waarop alle micro-segmenten "
+            "dezelfde gebruiksstatistiek hebben (OSRM splitst een doorgaand wegstuk "
+            "in vele 50-200 m vertices; die zijn samengevoegd).  \n"
+            "**Unieke wagens** = verschillende vrachtwagens · **Keer bereden** = "
+            "totaal aantal passages (één wagen kan vaker).  \n"
             "Veel wagens × weinig passages = brede gebruikersgroep · "
             "weinig wagens × veel passages = vaste route van enkele wagens."
         )
-        edges_top = sorted(edges, key=lambda e: e[2], reverse=True)[:100]
+        # Filter alleen edges die door de drempel komen, anders te veel chains
+        busy_edges = [e for e in edges if e[2] >= road_threshold]
+        chains = merge_identical_chains(busy_edges)
+        chains_sorted = sorted(
+            chains, key=lambda c: (c["n_passes"], c["n_wagens"]), reverse=True
+        )[:100]
+
         edges_df_export = pd.DataFrame(
             [
                 {
                     "rank": i + 1,
-                    "lat1": e[0][0],
-                    "lon1": e[0][1],
-                    "lat2": e[1][0],
-                    "lon2": e[1][1],
-                    "n_unieke_wagens": e[2],
-                    "n_keer_bereden": e[3] if len(e) > 3 else e[2],
+                    "lat_van": round(c["lat1"], 6),
+                    "lon_van": round(c["lon1"], 6),
+                    "lat_tot": round(c["lat2"], 6),
+                    "lon_tot": round(c["lon2"], 6),
+                    "n_unieke_wagens": c["n_wagens"],
+                    "n_keer_bereden": c["n_passes"],
                     "passages_per_wagen": round(
-                        (e[3] if len(e) > 3 else e[2]) / max(e[2], 1), 1
+                        c["n_passes"] / max(c["n_wagens"], 1), 1
                     ),
-                    "lat_midden": round((e[0][0] + e[1][0]) / 2, 6),
-                    "lon_midden": round((e[0][1] + e[1][1]) / 2, 6),
-                    "maps": f"https://www.google.com/maps?q={(e[0][0] + e[1][0]) / 2},{(e[0][1] + e[1][1]) / 2}",
+                    "lengte_m": int(c["length_km"] * 1000),
+                    "n_micro_edges": c["n_micro_edges"],
+                    "maps": f"https://www.google.com/maps?q={(c['lat1'] + c['lat2']) / 2},{(c['lon1'] + c['lon2']) / 2}",
                 }
-                for i, e in enumerate(edges_top)
+                for i, c in enumerate(chains_sorted)
             ]
         )
         st.dataframe(

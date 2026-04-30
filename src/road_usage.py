@@ -146,6 +146,100 @@ def compute_weighted_edges(
     ]
 
 
+def merge_identical_chains(
+    edges: list[tuple],
+) -> list[dict]:
+    """Voeg aaneengesloten micro-edges met identieke (n_wagens, n_passes) samen.
+
+    OSRM's `overview=full` polylines splitsen een wegstuk in veel kleine
+    vertices (50-200 m). Edges in zo'n splitsing hebben identieke metrics.
+    Deze functie clustert ze tot één 'wegvlak' per zelf-consistente keten.
+
+    Returns lijst dicts: {lat1, lon1, lat2, lon2, n_wagens, n_passes,
+    n_micro_edges, length_km}, ongesorteerd.
+    """
+    if not edges:
+        return []
+
+    by_point: dict[tuple, list[int]] = defaultdict(list)
+    for i, edge in enumerate(edges):
+        p1, p2 = edge[0], edge[1]
+        by_point[p1].append(i)
+        by_point[p2].append(i)
+
+    visited: set[int] = set()
+    chains: list[dict] = []
+
+    for start_idx, edge in enumerate(edges):
+        if start_idx in visited:
+            continue
+        n_wagens = edge[2]
+        n_passes = edge[3] if len(edge) > 3 else n_wagens
+        target = (n_wagens, n_passes)
+
+        chain_idxs = [start_idx]
+        chain_points: set[tuple] = {edge[0], edge[1]}
+        visited.add(start_idx)
+        queue = [start_idx]
+        while queue:
+            cur = queue.pop()
+            cur_edge = edges[cur]
+            for endpoint in (cur_edge[0], cur_edge[1]):
+                for nei_idx in by_point.get(endpoint, ()):
+                    if nei_idx in visited:
+                        continue
+                    nei = edges[nei_idx]
+                    nei_target = (
+                        nei[2],
+                        nei[3] if len(nei) > 3 else nei[2],
+                    )
+                    if nei_target != target:
+                        continue
+                    visited.add(nei_idx)
+                    chain_idxs.append(nei_idx)
+                    chain_points.add(nei[0])
+                    chain_points.add(nei[1])
+                    queue.append(nei_idx)
+
+        endpoints = [
+            pt
+            for pt in chain_points
+            if sum(
+                1
+                for ei in chain_idxs
+                if edges[ei][0] == pt or edges[ei][1] == pt
+            )
+            == 1
+        ]
+        if len(endpoints) >= 2:
+            start_pt = endpoints[0]
+            end_pt = endpoints[-1]
+        else:
+            lats = [pt[0] for pt in chain_points]
+            lons = [pt[1] for pt in chain_points]
+            start_pt = (min(lats), min(lons))
+            end_pt = (max(lats), max(lons))
+
+        length_km = sum(
+            _haversine_km(edges[ei][0], edges[ei][1]) for ei in chain_idxs
+        )
+
+        chains.append(
+            {
+                "lat1": start_pt[0],
+                "lon1": start_pt[1],
+                "lat2": end_pt[0],
+                "lon2": end_pt[1],
+                "n_wagens": n_wagens,
+                "n_passes": n_passes,
+                "n_micro_edges": len(chain_idxs),
+                "length_km": length_km,
+            }
+        )
+
+    return chains
+
+
 def compute_corridors(
     edges: list[tuple[tuple[float, float], tuple[float, float], int]],
     threshold: int,
@@ -156,21 +250,27 @@ def compute_corridors(
     Retourneert lijst dicts met: edges, length_km, max_n, median_n, center,
     gesorteerd op length_km (langst eerst).
     """
-    merged: dict[tuple, int] = {}
+    merged: dict[tuple, dict] = {}
     for edge in edges:
-        p1, p2, n = edge[0], edge[1], edge[2]
-        if n < threshold:
+        p1, p2 = edge[0], edge[1]
+        n_wagens = edge[2]
+        n_passes = edge[3] if len(edge) > 3 else n_wagens
+        if n_wagens < threshold:
             continue
         key = (p1, p2) if p1 < p2 else (p2, p1)
-        merged[key] = max(merged.get(key, 0), n)
+        if key in merged:
+            merged[key]["n_wagens"] = max(merged[key]["n_wagens"], n_wagens)
+            merged[key]["n_passes"] = max(merged[key]["n_passes"], n_passes)
+        else:
+            merged[key] = {"n_wagens": n_wagens, "n_passes": n_passes}
 
     if not merged:
         return []
 
     adj: dict[tuple, list[tuple]] = defaultdict(list)
-    for (a, b), n in merged.items():
-        adj[a].append((b, n))
-        adj[b].append((a, n))
+    for (a, b), info in merged.items():
+        adj[a].append((b, info["n_wagens"]))
+        adj[b].append((a, info["n_wagens"]))
 
     visited: set = set()
     corridors: list[dict] = []
@@ -190,27 +290,42 @@ def compute_corridors(
         visited |= component
 
         comp_edges = [
-            (a, b, n) for (a, b), n in merged.items() if a in component
+            (a, b, info["n_wagens"], info["n_passes"])
+            for (a, b), info in merged.items()
+            if a in component
         ]
-        total_km = sum(_haversine_km(a, b) for a, b, _ in comp_edges)
-        counts = sorted(n for _, _, n in comp_edges)
-        max_n = counts[-1]
-        median_n = counts[len(counts) // 2]
-        lats = [p[0] for a, b, _ in comp_edges for p in (a, b)]
-        lons = [p[1] for a, b, _ in comp_edges for p in (a, b)]
-        center = ((min(lats) + max(lats)) / 2, (min(lons) + max(lons)) / 2)
+        total_km = sum(_haversine_km(a, b) for a, b, _, _ in comp_edges)
+        wagens_list = sorted(n for _, _, n, _ in comp_edges)
+        passes_list = sorted(p for _, _, _, p in comp_edges)
+        max_n = wagens_list[-1]
+        median_n = wagens_list[len(wagens_list) // 2]
+        median_passes = passes_list[len(passes_list) // 2]
+        max_passes = passes_list[-1]
+
+        lats = [p[0] for a, b, _, _ in comp_edges for p in (a, b)]
+        lons = [p[1] for a, b, _, _ in comp_edges for p in (a, b)]
+        min_lat, max_lat = min(lats), max(lats)
+        min_lon, max_lon = min(lons), max(lons)
+        center = ((min_lat + max_lat) / 2, (min_lon + max_lon) / 2)
+        bbox_diag_km = _haversine_km((min_lat, min_lon), (max_lat, max_lon))
 
         corridors.append(
             {
                 "edges": comp_edges,
                 "length_km": total_km,
+                "spreiding_km": bbox_diag_km,
                 "max_n": max_n,
                 "median_n": median_n,
+                "max_passes": max_passes,
+                "median_passes": median_passes,
+                "n_edges": len(comp_edges),
                 "center": center,
             }
         )
 
-    corridors.sort(key=lambda c: (c["length_km"], c["max_n"]), reverse=True)
+    corridors.sort(
+        key=lambda c: (c["median_passes"], c["max_n"]), reverse=True
+    )
     return corridors
 
 
