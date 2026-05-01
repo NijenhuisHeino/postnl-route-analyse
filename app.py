@@ -786,6 +786,7 @@ def _render_dashboard(
     stops: pd.DataFrame,
     chargers_df: pd.DataFrame,
     road_threshold: int,
+    min_chain_length_m: int = 0,
 ) -> None:
     """Dashboard-tab: KPI's, top stops, top corridors, top wegvlakken, trends."""
     st.subheader("Kern-KPI's")
@@ -1055,9 +1056,22 @@ def _render_dashboard(
         # Filter alleen edges die door de drempel komen, anders te veel chains
         busy_edges = [e for e in edges if e[2] >= road_threshold]
         chains = merge_identical_chains(busy_edges)
+        n_total_chains = len(chains)
+        if min_chain_length_m > 0:
+            chains = [
+                c for c in chains
+                if c["length_km"] * 1000 >= min_chain_length_m
+            ]
         chains_sorted = sorted(
             chains, key=lambda c: (c["n_passes"], c["n_wagens"]), reverse=True
         )[:100]
+        if min_chain_length_m > 0:
+            st.caption(
+                f"Lengte-filter: ≥ {min_chain_length_m} m → "
+                f"{len(chains):,} van {n_total_chains:,} wegvlakken behouden. "
+                "Aanpassen in sidebar 'Min. wegvlak-lengte (Dashboard, m)'."
+                .replace(",", ".")
+            )
 
         edges_df_export = pd.DataFrame(
             [
@@ -1697,6 +1711,18 @@ def main() -> None:
                     "Hogere percentages = meer detail, maar trager."
                 ),
             )
+            min_chain_length_m = st.slider(
+                "Min. wegvlak-lengte (Dashboard, m)",
+                min_value=0,
+                max_value=5000,
+                value=200,
+                step=50,
+                help=(
+                    "Filtert in de Dashboard-tabel 'Top 100 wegvlakken' alle "
+                    "samengevoegde stukken korter dan deze lengte. Verwijdert "
+                    "de OSRM-fragmentjes en houdt substantiële stretches over."
+                ),
+            )
 
         with st.expander("⚡ Laadlocaties", expanded=False):
             show_chargers = st.checkbox(
@@ -2138,7 +2164,7 @@ def main() -> None:
         st_folium(fmap, height=620, use_container_width=True, returned_objects=[])
 
     with tab_dash:
-        _render_dashboard(stops, chargers_df, road_threshold)
+        _render_dashboard(stops, chargers_df, road_threshold, min_chain_length_m)
 
     with tab_sim:
         _render_simulation(stops)
