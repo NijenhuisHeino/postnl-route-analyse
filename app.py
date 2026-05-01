@@ -951,7 +951,11 @@ def _render_dashboard(
                 )
                 weg = info["road"] or "(onbekend)"
                 plaats = info["town"] or ""
-                for edge_tuple in corridor["edges"]:
+                edges_for_mini = corridor["edges"]
+                if len(edges_for_mini) > 30:
+                    step = max(1, len(edges_for_mini) // 30)
+                    edges_for_mini = edges_for_mini[::step][:30]
+                for edge_tuple in edges_for_mini:
                     p1, p2 = edge_tuple[0], edge_tuple[1]
                     folium.PolyLine(
                         [p1, p2], color="#dc2626", weight=5, opacity=0.85

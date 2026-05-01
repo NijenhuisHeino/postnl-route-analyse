@@ -9,6 +9,7 @@ font = "sans serif"
 headless = true
 enableXsrfProtection = false
 enableCORS = false
+maxMessageSize = 500
 
 [browser]
 serverAddress = "route-analyse.nijenhuistrucksolutions.nl"
