@@ -982,8 +982,73 @@ def _render_dashboard(
         else:
             st.caption("Geen vervoerder-data beschikbaar.")
 
+    st.divider()
+    st.subheader("Inzet-heatmap: dag × uur")
+    st.caption(
+        "Hoe vaak is een truck actief op welk uur van de week? "
+        "Telling = aantal travel-rijen waarvan de starttijd op dat dag-uur "
+        "valt. Donkerder = drukker. Geeft inzicht in shift-patronen en "
+        "rust-windows tussen shifts (waar laden mogelijk is)."
+    )
+    if "gepland_start" in stops.columns and not stops["gepland_start"].isna().all():
+        act = stops.dropna(subset=["gepland_start"]).copy()
+        act["dag"] = act["gepland_start"].dt.day_name()
+        act["uur"] = act["gepland_start"].dt.hour
+        grid = (
+            act.groupby(["dag", "uur"])
+            .size()
+            .reset_index(name="aantal")
+        )
+        day_order = [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ]
+        day_nl = {
+            "Monday": "Ma",
+            "Tuesday": "Di",
+            "Wednesday": "Wo",
+            "Thursday": "Do",
+            "Friday": "Vr",
+            "Saturday": "Za",
+            "Sunday": "Zo",
+        }
+        grid["dag"] = grid["dag"].map(day_nl)
+        try:
+            import altair as alt
 
-def _auto_restore_cache() -> None:
+            chart = (
+                alt.Chart(grid)
+                .mark_rect()
+                .encode(
+                    x=alt.X("uur:O", title="Uur van de dag"),
+                    y=alt.Y(
+                        "dag:O",
+                        title="Dag",
+                        sort=[day_nl[d] for d in day_order],
+                    ),
+                    color=alt.Color(
+                        "aantal:Q",
+                        scale=alt.Scale(scheme="reds"),
+                        title="# travel-rijen",
+                    ),
+                    tooltip=[
+                        alt.Tooltip("dag:N", title="Dag"),
+                        alt.Tooltip("uur:O", title="Uur"),
+                        alt.Tooltip("aantal:Q", title="Aantal", format=","),
+                    ],
+                )
+                .properties(height=260)
+            )
+            st.altair_chart(chart, use_container_width=True)
+        except Exception as e:
+            st.error(f"Heatmap-render fout: {e}")
+    else:
+        st.caption("Geen `gepland_start` beschikbaar.")
     """Als kritieke cache-bestanden ontbreken maar in Drive-backup staan, herstel."""
     import shutil
 
@@ -1235,6 +1300,29 @@ def main() -> None:
             help="Leeg = alle wagens.",
         )
 
+        TRIP_KM_BUCKETS = [
+            ("0–10 km", 0, 10),
+            ("10–100 km", 10, 100),
+            ("100–200 km", 100, 200),
+            ("200–300 km", 200, 300),
+            ("300–400 km", 300, 400),
+            ("400–500 km", 400, 500),
+            ("500–600 km", 500, 600),
+            ("600–700 km", 600, 700),
+            ("700–800 km", 700, 800),
+            (">800 km", 800, float("inf")),
+        ]
+        sel_trip_buckets = st.multiselect(
+            "Trip-afstand buckets",
+            options=[b[0] for b in TRIP_KM_BUCKETS],
+            default=[b[0] for b in TRIP_KM_BUCKETS],
+            help=(
+                "Filter trips op totale rij-afstand. Een trip = alle ritten "
+                "binnen één tripnummer (één shift). Selecteer welke trip-"
+                "groottes je wilt zien."
+            ),
+        )
+
         st.header("Kaartlagen")
 
         with st.expander("📍 Stoplocaties", expanded=True):
@@ -1255,9 +1343,12 @@ def main() -> None:
 
         with st.expander("🛣️ Wegvlakken", expanded=False):
             show_routes = st.checkbox(
-                "Routelijnen (rechte lijnen tussen stops)",
+                "Routelijnen (volgt wegennet via OSRM)",
                 value=False,
-                help="Eenvoudige stop-naar-stop verbindingen, geen wegennet.",
+                help=(
+                    "Toont per trip de werkelijke route via het wegennet. "
+                    "Bij grote selecties wordt gecapped op 2000 trips."
+                ),
             )
             show_road_heatmap = st.checkbox(
                 "Wegvlak-heatmap (OSRM, alle trips)",
@@ -1353,6 +1444,21 @@ def main() -> None:
         date_range=dr,
         min_dwell_min=min_dwell,
     )
+
+    if sel_trip_buckets and len(sel_trip_buckets) < len(TRIP_KM_BUCKETS):
+        if "afstand_km_trip" in stops.columns:
+            trip_km = stops.groupby("trip_id")["afstand_km_trip"].max()
+        else:
+            trip_km = stops.groupby("trip_id")["afstand_km"].sum()
+        allowed_trips: set = set()
+        for bucket_label in sel_trip_buckets:
+            for label, lo, hi in TRIP_KM_BUCKETS:
+                if label == bucket_label:
+                    allowed_trips.update(
+                        trip_km[(trip_km >= lo) & (trip_km < hi)].index
+                    )
+                    break
+        stops = stops[stops["trip_id"].isin(allowed_trips)].reset_index(drop=True)
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Stops (na filter)", f"{len(stops):,}".replace(",", "."))
@@ -1473,7 +1579,7 @@ def main() -> None:
                 ).add_to(cluster)
 
         routes: dict = {}
-        need_osrm = show_top_x_overlay or show_road_heatmap
+        need_osrm = show_top_x_overlay or show_road_heatmap or show_routes
         if need_osrm:
             segs = unique_segments(stops)
             cached_routes, missing_n = load_cached_routes(segs)
@@ -1595,13 +1701,13 @@ def main() -> None:
             if len(trip_groups) > TRIP_CAP:
                 st.info(
                     f"ℹ️ {len(trip_groups):,} trips — alleen eerste {TRIP_CAP} "
-                    "getekend (rechte lijnen). Filter eerst voor specifieke trips."
+                    "getekend. Filter eerst voor specifieke trips."
                 )
                 trip_groups = trip_groups[:TRIP_CAP]
             for _, g in trip_groups:
                 if len(g) < 2:
                     continue
-                coords = g[["lat", "lon"]].values.tolist()
+                coords = trip_polyline(g, routes)
                 folium.PolyLine(
                     coords, color="#6b21a8", weight=2, opacity=0.55
                 ).add_to(fmap)
@@ -1702,7 +1808,7 @@ def main() -> None:
         if show_routes:
             legend_items.append(
                 ('<span style="background:#6b21a8;display:inline-block;width:36px;height:3px;"></span>',
-                 "Routelijnen (rechte lijnen tussen stops)")
+                 "Routelijnen per trip (volgt wegennet)")
             )
         if show_chargers and not chargers_df.empty:
             legend_items.append(
