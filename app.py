@@ -32,6 +32,7 @@ from src.simulation import (
     simulate_soc,
 )
 from src.summary_loader import load_trip_summaries
+from src.zez import annotate_stops_with_zez, load_zez_pc6
 from src.hotspots import rank_hotspots
 from src.road_usage import (
     compute_corridors,
@@ -362,6 +363,20 @@ def _load_csv_monthly(directory: str) -> pd.DataFrame:
 @st.cache_data(show_spinner="Geverifieerde HDV-laadlocaties laden...")
 def _load_chargers(min_power_kw: float) -> pd.DataFrame:
     return load_hdv_chargers(min_power_kw=min_power_kw)
+
+
+@st.cache_data(show_spinner="ZE-zones aan stops koppelen...")
+def _annotate_zez(df: pd.DataFrame) -> pd.DataFrame:
+    try:
+        zez_df = load_zez_pc6()
+        return annotate_stops_with_zez(df, zez_df)
+    except Exception:
+        out = df.copy()
+        out["pc6"] = None
+        out["ze_zone"] = ""
+        out["ze_startdatum"] = ""
+        out["in_zez"] = False
+        return out
 
 
 def _persist_upload(uploaded_file) -> Path:
@@ -1179,6 +1194,59 @@ def _render_dashboard(
         else:
             st.caption("Geen vervoerder-data beschikbaar.")
 
+    if "in_zez" in stops.columns:
+        st.divider()
+        st.subheader("Zero-emission zone analyse")
+        zez_stops = stops[stops["in_zez"]]
+        n_in = len(zez_stops)
+        pct = 100 * n_in / max(len(stops), 1)
+        n_zones = zez_stops["ze_zone"].nunique() if not zez_stops.empty else 0
+        n_trucks_in_zez = zez_stops["wagencode"].nunique() if not zez_stops.empty else 0
+        z1, z2, z3 = st.columns(3)
+        z1.metric(
+            "Stops in ZE-zone",
+            f"{n_in:,}".replace(",", "."),
+            f"{pct:.1f}% van totaal",
+        )
+        z2.metric("Verschillende ZE-zones bezocht", n_zones)
+        z3.metric(
+            "Trucks die een ZE-zone bezoeken",
+            f"{n_trucks_in_zez:,}".replace(",", "."),
+        )
+
+        if not zez_stops.empty:
+            zez_summary = (
+                zez_stops.groupby(["ze_zone", "ze_startdatum"])
+                .agg(
+                    n_stops=("trip_id", "size"),
+                    n_unieke_trips=("trip_id", "nunique"),
+                    n_unieke_wagens=("wagencode", "nunique"),
+                )
+                .reset_index()
+                .sort_values("n_stops", ascending=False)
+            )
+            st.caption(
+                "Per ZE-zone: hoeveel stops + welke startdatum. "
+                "Locaties met vroege startdatum zijn prioriteit voor laadinfra."
+            )
+            st.dataframe(
+                zez_summary,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "ze_zone": st.column_config.Column("ZE-zone"),
+                    "ze_startdatum": st.column_config.Column("Startdatum"),
+                    "n_stops": st.column_config.Column("Stops"),
+                    "n_unieke_trips": st.column_config.Column("Trips"),
+                    "n_unieke_wagens": st.column_config.Column("Wagens"),
+                },
+            )
+        else:
+            st.info(
+                "Geen stops in ZE-zone gevonden in de huidige selectie. "
+                "Pas filters aan om bredere data te zien."
+            )
+
     st.divider()
     st.subheader("Inzet-heatmap: dag × uur")
     st.caption(
@@ -1437,6 +1505,9 @@ def main() -> None:
                 "Geen standtijd per stop beschikbaar."
             )
 
+    if "adres" in df.columns and "in_zez" not in df.columns:
+        df = _annotate_zez(df)
+
     with st.sidebar:
         st.header("Filters")
 
@@ -1520,6 +1591,17 @@ def main() -> None:
                 "Filter trips op totale rij-afstand. Een trip = alle ritten "
                 "binnen één tripnummer (één shift). Selecteer welke trip-"
                 "groottes je wilt zien."
+            ),
+        )
+
+        zez_filter_mode = st.radio(
+            "ZE-zone filter",
+            options=["Alle stops", "Alleen stops in ZE-zone", "Alleen stops buiten ZE-zone"],
+            index=0,
+            help=(
+                "ZE-zone = postcode-gebied waar vanaf 2025-2030 alleen "
+                "emissieloze trucks mogen. Filter helpt bij prioritering "
+                "van laadinfra in ZE-relevante locaties."
             ),
         )
 
@@ -1659,6 +1741,12 @@ def main() -> None:
                     )
                     break
         stops = stops[stops["trip_id"].isin(allowed_trips)].reset_index(drop=True)
+
+    if "in_zez" in stops.columns:
+        if zez_filter_mode == "Alleen stops in ZE-zone":
+            stops = stops[stops["in_zez"]].reset_index(drop=True)
+        elif zez_filter_mode == "Alleen stops buiten ZE-zone":
+            stops = stops[~stops["in_zez"]].reset_index(drop=True)
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Stops (na filter)", f"{len(stops):,}".replace(",", "."))
