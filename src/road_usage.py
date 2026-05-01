@@ -329,6 +329,19 @@ def compute_corridors(
     return corridors
 
 
+def compass_direction(lat1: float, lon1: float, lat2: float, lon2: float) -> str:
+    """Return kompas-richting tussen twee punten als 8-windstreken-tekst."""
+    if lat1 == lat2 and lon1 == lon2:
+        return ""
+    dlon = math.radians(lon2 - lon1)
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    y = math.sin(dlon) * math.cos(phi2)
+    x = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlon)
+    bearing = (math.degrees(math.atan2(y, x)) + 360) % 360
+    dirs = ["N", "NO", "O", "ZO", "Z", "ZW", "W", "NW"]
+    return dirs[int((bearing + 22.5) / 45) % 8]
+
+
 def lerp_hex(lo: str, hi: str, t: float) -> str:
     """Lineaire interpolatie tussen twee hex-kleuren in RGB-ruimte."""
     t = max(0.0, min(1.0, t))

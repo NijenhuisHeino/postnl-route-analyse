@@ -35,6 +35,7 @@ from src.summary_loader import load_trip_summaries
 from src.zez import annotate_stops_with_zez, load_zez_pc6
 from src.hotspots import rank_hotspots
 from src.road_usage import (
+    compass_direction,
     compute_corridors,
     compute_road_heatmap_points,
     compute_weighted_edges,
@@ -1073,14 +1074,46 @@ def _render_dashboard(
                 .replace(",", ".")
             )
 
-        edges_df_export = pd.DataFrame(
-            [
+        endpoint_coords: list[tuple[float, float]] = []
+        for c in chains_sorted:
+            endpoint_coords.append((c["lat1"], c["lon1"]))
+            endpoint_coords.append((c["lat2"], c["lon2"]))
+
+        if endpoint_coords:
+            with st.spinner(
+                "Wegnamen + plaatsnamen voor wegvlakken opzoeken (gecached)..."
+            ):
+                rev_progress = st.progress(0.0)
+
+                def _rcb(i: int, total: int) -> None:
+                    rev_progress.progress(min(1.0, i / max(total, 1)))
+
+                endpoint_names = reverse_geocode(endpoint_coords, progress_cb=_rcb)
+                rev_progress.empty()
+        else:
+            endpoint_names = {}
+
+        rows = []
+        for i, c in enumerate(chains_sorted):
+            start_key = (round(c["lat1"], 4), round(c["lon1"], 4))
+            end_key = (round(c["lat2"], 4), round(c["lon2"], 4))
+            start_info = endpoint_names.get(
+                start_key, {"road": "", "town": "", "display": ""}
+            )
+            end_info = endpoint_names.get(
+                end_key, {"road": "", "town": "", "display": ""}
+            )
+            wegnaam = start_info["road"] or end_info["road"] or "(onbekend)"
+            van = start_info["town"] or ""
+            naar = end_info["town"] or ""
+            richting = compass_direction(c["lat1"], c["lon1"], c["lat2"], c["lon2"])
+            rows.append(
                 {
                     "#": i + 1,
-                    "lat_van": round(c["lat1"], 6),
-                    "lon_van": round(c["lon1"], 6),
-                    "lat_tot": round(c["lat2"], 6),
-                    "lon_tot": round(c["lon2"], 6),
+                    "wegnaam": wegnaam,
+                    "van": van,
+                    "naar": naar,
+                    "richting": richting,
                     "n_unieke_wagens": c["n_wagens"],
                     "n_keer_bereden": c["n_passes"],
                     "passages_per_wagen": round(
@@ -1088,11 +1121,14 @@ def _render_dashboard(
                     ),
                     "lengte_m": int(c["length_km"] * 1000),
                     "n_micro_edges": c["n_micro_edges"],
+                    "lat_van": round(c["lat1"], 6),
+                    "lon_van": round(c["lon1"], 6),
+                    "lat_tot": round(c["lat2"], 6),
+                    "lon_tot": round(c["lon2"], 6),
                     "maps": f"https://www.google.com/maps?q={(c['lat1'] + c['lat2']) / 2},{(c['lon1'] + c['lon2']) / 2}",
                 }
-                for i, c in enumerate(chains_sorted)
-            ]
-        )
+            )
+        edges_df_export = pd.DataFrame(rows)
 
         if chains_sorted:
             mini_edges = folium.Map(
