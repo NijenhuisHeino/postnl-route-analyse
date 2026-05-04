@@ -169,13 +169,23 @@
             </div>
             <div class="map-frame">
                 <div id="route-map" class="route-map"></div>
-                <aside class="map-legend" aria-label="Legenda kaartlagen">
+                <aside class="map-legend @(LegendCollapsed ? "is-collapsed" : "")" aria-label="Legenda kaartlagen">
                     <div class="legend-heading">
                         <strong>Legenda</strong>
-                        <span>Actieve lagen</span>
+                        @if (!LegendCollapsed)
+                        {
+                            <span>Actieve lagen</span>
+                        }
+                        <button type="button"
+                                class="legend-toggle"
+                                title="@(LegendCollapsed ? "Legenda tonen" : "Legenda minimaliseren")"
+                                aria-label="@(LegendCollapsed ? "Legenda tonen" : "Legenda minimaliseren")"
+                                @onclick="() => LegendCollapsed = !LegendCollapsed">
+                            @(LegendCollapsed ? "+" : "-")
+                        </button>
                     </div>
 
-                    @if (ShowStopHeat)
+                    @if (!LegendCollapsed && ShowStopHeat)
                     {
                         <div class="legend-item heat">
                             <span class="legend-gradient stop-gradient"></span>
@@ -186,7 +196,7 @@
                         </div>
                     }
 
-                    @if (ShowMarkers)
+                    @if (!LegendCollapsed && ShowMarkers)
                     {
                         <div class="legend-item">
                             <span class="legend-symbol stop-marker"></span>
@@ -197,7 +207,7 @@
                         </div>
                     }
 
-                    @if (ShowChargers)
+                    @if (!LegendCollapsed && ShowChargers)
                     {
                         <div class="legend-item">
                             <span class="legend-symbol charger-marker"></span>
@@ -208,7 +218,7 @@
                         </div>
                     }
 
-                    @if (ShowOvernight)
+                    @if (!LegendCollapsed && ShowOvernight)
                     {
                         <div class="legend-item split">
                             <span class="legend-symbol overnight-ok"></span>
@@ -220,7 +230,7 @@
                         </div>
                     }
 
-                    @if (ShowRoads)
+                    @if (!LegendCollapsed && ShowRoads)
                     {
                         <div class="legend-item">
                             <span class="legend-line road-line"></span>
@@ -231,7 +241,7 @@
                         </div>
                     }
 
-                    @if (ShowRoadHeat)
+                    @if (!LegendCollapsed && ShowRoadHeat)
                     {
                         <div class="legend-item heat">
                             <span class="legend-gradient road-gradient"></span>
@@ -242,7 +252,7 @@
                         </div>
                     }
 
-                    @if (SelectedDetail?.SelectionType == "stop")
+                    @if (!LegendCollapsed && SelectedDetail?.SelectionType == "stop")
                     {
                         <div class="legend-item heat">
                             <span class="legend-gradient selection-gradient"></span>
@@ -471,6 +481,7 @@
     private bool IsBusy { get; set; }
     private bool IsUploading { get; set; }
     private bool MapReady { get; set; }
+    private bool LegendCollapsed { get; set; }
     private string? SelectedDepotId { get; set; }
     private RoadSelection? SelectedRoad { get; set; }
     private StopLocationDetailRequest? SelectedStopLocation { get; set; }
