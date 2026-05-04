@@ -797,6 +797,16 @@ td span,
   outline-offset: 1px;
 }
 
+.week-cell.is-empty {
+  border-color: var(--eta-border);
+  background: #f7f7fa;
+  color: rgba(46, 35, 67, 0.42);
+}
+
+.week-cell.is-empty.active {
+  background: #fff;
+}
+
 .week-cell span {
   overflow: hidden;
   max-width: 100%;
@@ -821,6 +831,14 @@ td span,
 
 .week-demand-detail strong {
   color: var(--eta-purple);
+}
+
+.week-demand-note {
+  margin: 6px 0 0;
+  color: var(--eta-muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
 }
 
 .histogram-row {

@@ -294,7 +294,7 @@
                     var selectedDemand = SelectedWeeklyDemandCell();
                     <div class="analysis-card weekly-demand-card">
                         <div class="card-heading">
-                            <strong>Weekprofiel vermogensvraag</strong>
+                            <strong>Piekprofiel vermogensvraag per weekuur</strong>
                             <span>@(selectedDemand is null ? "Geen stilstandvensters" : $"{selectedDemand.Label} · {selectedDemand.Vehicles:N0} voertuigen · {selectedDemand.RequiredKw:N0} kW")</span>
                         </div>
                         <div class="week-demand-heatmap" aria-label="Weekprofiel vermogensvraag">
@@ -317,6 +317,11 @@
                                 }
                             }
                         </div>
+                        <p class="week-demand-note">
+                            @(EmptyWeekCellCount() == 0
+                                ? "In de huidige selectie is elk week/uurblok minimaal één keer bezet; er zijn daarom geen 0 kW-blokken voor deze filters."
+                                : "Grijze blokken zijn 0 kW: geen voertuigen aanwezig in dat week/uurblok.")
+                        </p>
                         @if (selectedDemand is not null)
                         {
                             <div class="week-demand-detail">
@@ -908,14 +913,15 @@
 
     private string WeekCellClass(WeeklyDemandCell cell)
     {
-        return SelectedDemandDay == cell.DayIndex && SelectedDemandHour == cell.Hour ? "week-cell active" : "week-cell";
+        var classes = cell.RequiredKw <= 0 && cell.Vehicles <= 0 ? "week-cell is-empty" : "week-cell";
+        return SelectedDemandDay == cell.DayIndex && SelectedDemandHour == cell.Hour ? $"{classes} active" : classes;
     }
 
     private string WeekCellStyle(WeeklyDemandCell cell)
     {
         var max = SelectedDetail?.Charging.WeeklyProfile.Max(x => x.RequiredKw) ?? 0;
         var intensity = max <= 0 ? 0 : Math.Clamp(cell.RequiredKw / max, 0, 1);
-        var alpha = 0.12 + 0.78 * intensity;
+        var alpha = cell.RequiredKw <= 0 && cell.Vehicles <= 0 ? 0 : 0.12 + 0.78 * intensity;
         return $"--hour-alpha:{alpha.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}";
     }
 
@@ -946,6 +952,11 @@
         return values.Count <= maxVisible
             ? string.Join(", ", visible)
             : string.Join(", ", visible) + $" +{values.Count - maxVisible}";
+    }
+
+    private int EmptyWeekCellCount()
+    {
+        return SelectedDetail?.Charging.WeeklyProfile.Count(x => x.RequiredKw <= 0 && x.Vehicles <= 0) ?? 0;
     }
 
     private static string RoadStatusLabel(string? status)
