@@ -3,12 +3,12 @@
 @inject RouteAnalysisService Analysis
 @inject IJSRuntime JS
 
-<PageTitle>PostNL Laadinfrastructuur Planner</PageTitle>
+<PageTitle>Laadinfrastructuur Planner</PageTitle>
 
 <div class="planner-shell">
     <aside class="planner-sidebar">
         <div class="brand-block">
-            <div class="brand-mark">PN</div>
+            <div class="brand-mark">LI</div>
             <div>
                 <h1>Laadinfrastructuur Planner</h1>
                 <p>Depot- en corridoranalyse</p>
@@ -115,12 +115,29 @@
                 <span>@Metadata.StopCount.ToString("N0") stopmomenten</span>
             </div>
         }
+
+        <section class="upload-panel">
+            <div>
+                <strong>Eigen dataset</strong>
+                <span>CSV of parquet met ritregels</span>
+            </div>
+            <InputFile OnChange="UploadDatasetAsync" multiple accept=".csv,.parquet" />
+            <p>CSV gebruikt bij voorkeur kolommen voor voertuig, rit, start/eind, afstand en lat/lon. Zonder lat/lon is een locatiekoppeling nodig.</p>
+            @if (IsUploading)
+            {
+                <span class="upload-status">Dataset verwerken...</span>
+            }
+            else if (UploadResult is not null)
+            {
+                <span class="upload-status @(UploadResult.Success ? "ok" : "error")">@UploadResult.Message</span>
+            }
+        </section>
     </aside>
 
     <main class="planner-main">
         <header class="planner-header">
             <div>
-                <p class="section-label">PostNL route-analyse</p>
+                <p class="section-label">Route-analyse</p>
                 <h2>Laadvraag per depot en druk wegvlak</h2>
             </div>
             <div class="header-status @(Metadata?.DataAvailable == true ? "ok" : "missing")">
@@ -407,8 +424,10 @@
     private DashboardResponse? Dashboard { get; set; }
     private SimulationResponse? Simulation { get; set; }
     private SelectionDetailResponse? SelectedDetail { get; set; }
+    private DatasetUploadResult? UploadResult { get; set; }
     private DotNetObjectReference<Home>? MapCallbacks { get; set; }
     private bool IsBusy { get; set; }
+    private bool IsUploading { get; set; }
     private bool MapReady { get; set; }
     private string? SelectedDepotId { get; set; }
     private RoadSelection? SelectedRoad { get; set; }
@@ -460,7 +479,7 @@
         if (firstRender)
         {
             MapCallbacks = DotNetObjectReference.Create(this);
-            await JS.InvokeVoidAsync("postnlPlannerMap.init", "route-map", MapCallbacks);
+            await JS.InvokeVoidAsync("routePlannerMap.init", "route-map", MapCallbacks);
             MapReady = true;
             await RefreshMapAsync();
         }
@@ -471,6 +490,31 @@
         await LoadDataAsync();
         await RefreshMapAsync();
         await RefreshSelectedDetailAsync();
+    }
+
+    private async Task UploadDatasetAsync(InputFileChangeEventArgs e)
+    {
+        IsUploading = true;
+        IsBusy = true;
+        UploadResult = null;
+        SelectedDetail = null;
+        SelectedDepotId = null;
+        SelectedRoad = null;
+
+        try
+        {
+            UploadResult = await Analysis.ReplaceDatasetAsync(e.GetMultipleFiles(24));
+            Metadata = await Analysis.GetMetadataAsync();
+            DateFromText = Metadata.MinDate?.ToString("yyyy-MM-dd") ?? "";
+            DateToText = Metadata.MaxDate?.ToString("yyyy-MM-dd") ?? "";
+            await LoadDataAsync();
+            await RefreshMapAsync();
+        }
+        finally
+        {
+            IsUploading = false;
+            IsBusy = false;
+        }
     }
 
     private async Task LoadDataAsync()
@@ -520,7 +564,7 @@
             return;
         }
 
-        await JS.InvokeVoidAsync("postnlPlannerMap.update", BuildFilter(), BuildChargerFilter(), BuildOvernightFilter(), new
+        await JS.InvokeVoidAsync("routePlannerMap.update", BuildFilter(), BuildChargerFilter(), BuildOvernightFilter(), new
         {
             showStopHeat = ShowStopHeat,
             showMarkers = ShowMarkers,

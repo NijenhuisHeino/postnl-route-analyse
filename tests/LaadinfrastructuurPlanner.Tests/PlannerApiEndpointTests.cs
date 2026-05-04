@@ -3,14 +3,14 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Postnl.LaadinfrastructuurPlanner.Models;
-using Postnl.LaadinfrastructuurPlanner.Services;
+using LaadinfrastructuurPlanner.Models;
+using LaadinfrastructuurPlanner.Services;
 
-namespace Postnl.LaadinfrastructuurPlanner.Tests;
+namespace LaadinfrastructuurPlanner.Tests;
 
 public sealed class PlannerApiEndpointTests : IDisposable
 {
-    private readonly string _root = Path.Combine(Path.GetTempPath(), "postnl-planner-api-tests", Guid.NewGuid().ToString("N"));
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "route-analysis-api-tests", Guid.NewGuid().ToString("N"));
 
     [Fact]
     public async Task PlannerApiEndpointsReturnExpectedJson()
@@ -28,6 +28,7 @@ public sealed class PlannerApiEndpointTests : IDisposable
                     {
                         RepoRoot = _root,
                         CacheDir = cacheDir,
+                        UploadedDatasetDir = Path.Combine(cacheDir, "uploaded-dataset", "active"),
                         DuckDbPath = Path.Combine(cacheDir, "planner", "route-analysis.duckdb"),
                         ManifestPath = Path.Combine(cacheDir, "planner", "manifest.json"),
                     });

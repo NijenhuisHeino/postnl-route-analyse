@@ -1,8 +1,8 @@
 using System.Text.Json;
 using DuckDB.NET.Data;
-using Postnl.LaadinfrastructuurPlanner.Models;
+using LaadinfrastructuurPlanner.Models;
 
-namespace Postnl.LaadinfrastructuurPlanner.Services;
+namespace LaadinfrastructuurPlanner.Services;
 
 public sealed class DuckDbRouteStore
 {
@@ -18,7 +18,8 @@ public sealed class DuckDbRouteStore
 
     public string? StopsPath => ResolveStopsPath();
     public string? StopsSourceLabel => ResolveStopsSourceLabel();
-    public bool HasStops => CanUseOriginalCsvs() || ResolveStopsParquetPath() is not null;
+    public bool HasStops => ResolveSourceCsvFiles().Length > 0 || ResolveStopsParquetPath() is not null;
+    public RouteAnalysisOptions Options => _options;
 
     public async Task EnsureReadyAsync(CancellationToken cancellationToken = default)
     {
@@ -55,11 +56,11 @@ public sealed class DuckDbRouteStore
             await using var connection = CreateConnection();
             connection.Open();
 
-            var csvFiles = ResolveOriginalCsvFiles();
+            var csvFiles = ResolveSourceCsvFiles();
             var geocode = ResolveAuxiliaryCachePath("geocode_addresses.parquet");
-            if (csvFiles.Length > 0 && geocode is not null)
+            if (csvFiles.Length > 0)
             {
-                CreateStopsFromOriginalCsvs(connection, csvFiles, geocode);
+                CreateStopsFromCsvs(connection, csvFiles, geocode);
                 CreateAnalysisTables(connection);
             }
             else if (ResolveStopsParquetPath() is { } stops)
@@ -69,18 +70,21 @@ public sealed class DuckDbRouteStore
                 CreateAnalysisTables(connection);
             }
 
-            foreach (var variant in Variants)
+            if (!HasUploadedDataset())
             {
-                var edges = ResolveAuxiliaryCachePath($"agg_weighted_edges_{variant}.parquet");
-                if (edges is not null && File.Exists(edges))
+                foreach (var variant in Variants)
                 {
-                    Execute(connection, $"CREATE OR REPLACE VIEW edges_{variant} AS SELECT * FROM read_parquet({SqlString(edges)});");
-                }
+                    var edges = ResolveAuxiliaryCachePath($"agg_weighted_edges_{variant}.parquet");
+                    if (edges is not null && File.Exists(edges))
+                    {
+                        Execute(connection, $"CREATE OR REPLACE VIEW edges_{variant} AS SELECT * FROM read_parquet({SqlString(edges)});");
+                    }
 
-                var heat = ResolveAuxiliaryCachePath($"agg_road_heatmap_{variant}.parquet");
-                if (heat is not null && File.Exists(heat))
-                {
-                    Execute(connection, $"CREATE OR REPLACE VIEW road_heat_{variant} AS SELECT * FROM read_parquet({SqlString(heat)});");
+                    var heat = ResolveAuxiliaryCachePath($"agg_road_heatmap_{variant}.parquet");
+                    if (heat is not null && File.Exists(heat))
+                    {
+                        Execute(connection, $"CREATE OR REPLACE VIEW road_heat_{variant} AS SELECT * FROM read_parquet({SqlString(heat)});");
+                    }
                 }
             }
 
@@ -104,15 +108,30 @@ public sealed class DuckDbRouteStore
         return new DuckDBConnection($"Data Source={_options.DuckDbPath}");
     }
 
+    public async Task ResetAsync(CancellationToken cancellationToken = default)
+    {
+        await _initLock.WaitAsync(cancellationToken);
+        try
+        {
+            _initialized = false;
+            DeleteFileIfExists(_options.DuckDbPath);
+            DeleteFileIfExists(_options.ManifestPath);
+        }
+        finally
+        {
+            _initLock.Release();
+        }
+    }
+
     public CacheFileStatus[] GetCacheStatus()
     {
         var statuses = new List<CacheFileStatus>();
-        var csvFiles = ResolveOriginalCsvFiles();
-        statuses.Add(BuildAggregateStatus("original_csvs", _options.OriginalCsvDir, csvFiles));
+        var csvFiles = ResolveSourceCsvFiles();
+        statuses.Add(BuildAggregateStatus("source_csvs", ResolveSourceCsvDirectory(), csvFiles));
 
         var files = new List<(string Name, string Path)>
         {
-            ("stops_parquet", ResolveStopsParquetPath() ?? Path.Combine(_options.CacheDir, "postnl_csv_Rittendata.parquet")),
+            ("stops_parquet", ResolveStopsParquetPath() ?? Path.Combine(_options.CacheDir, "route_stops_Rittendata.parquet")),
             ("geocode_addresses", ResolveAuxiliaryCachePath("geocode_addresses.parquet") ?? Path.Combine(_options.CacheDir, "geocode_addresses.parquet")),
             ("chargers", ResolveAuxiliaryCachePath("hdv_chargers.parquet") ?? Path.Combine(_options.CacheDir, "hdv_chargers.parquet")),
             ("osrm_routes", ResolveAuxiliaryCachePath("osrm_routes_full.parquet") ?? Path.Combine(_options.CacheDir, "osrm_routes_full.parquet")),
@@ -158,46 +177,88 @@ public sealed class DuckDbRouteStore
 
     private string? ResolveStopsPath()
     {
-        return CanUseOriginalCsvs()
-            ? _options.OriginalCsvDir
+        return ResolveSourceCsvFiles().Length > 0
+            ? ResolveSourceCsvDirectory()
             : ResolveStopsParquetPath();
     }
 
     private string? ResolveStopsSourceLabel()
     {
-        var csvFiles = ResolveOriginalCsvFiles();
-        if (csvFiles.Length > 0 && ResolveAuxiliaryCachePath("geocode_addresses.parquet") is not null)
+        if (HasUploadedDataset())
         {
-            var suffix = csvFiles.Length == 1 ? "maand" : "maanden";
-            return $"Ritdata 2025 ({csvFiles.Length} {suffix})";
+            return "Eigen dataset";
+        }
+
+        var csvFiles = ResolveSourceCsvFiles();
+        if (csvFiles.Length > 0)
+        {
+            var suffix = csvFiles.Length == 1 ? "bestand" : "bestanden";
+            return $"Ritdata ({csvFiles.Length} {suffix})";
         }
 
         var parquet = ResolveStopsParquetPath();
-        return parquet is null ? null : "Ritdata";
+        return parquet is null ? null : "Vaste ritdataset";
     }
 
     private string? ResolveStopsParquetPath()
     {
-        var preferred = Path.Combine(_options.CacheDir, "postnl_csv_Rittendata.parquet");
+        var uploaded = ResolveUploadedDatasetFiles()
+            .Where(path => Path.GetExtension(path).Equals(".parquet", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(x => x)
+            .FirstOrDefault();
+        if (uploaded is not null)
+        {
+            return uploaded;
+        }
+
+        var preferred = Path.Combine(_options.CacheDir, "route_stops_Rittendata.parquet");
         if (File.Exists(preferred))
         {
             return preferred;
         }
 
         return Directory.Exists(_options.CacheDir)
-            ? Directory.GetFiles(_options.CacheDir, "postnl_csv_*.parquet").OrderBy(x => x).FirstOrDefault()
+            ? Directory.GetFiles(_options.CacheDir, "route_stops_*.parquet").OrderBy(x => x).FirstOrDefault()
             : null;
     }
 
-    private bool CanUseOriginalCsvs()
+    private string[] ResolveSourceCsvFiles()
     {
-        return ResolveOriginalCsvFiles().Length > 0 && ResolveAuxiliaryCachePath("geocode_addresses.parquet") is not null;
+        var uploaded = ResolveUploadedDatasetFiles()
+            .Where(path => Path.GetExtension(path).Equals(".csv", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(x => x)
+            .ToArray();
+        return uploaded.Length > 0 ? uploaded : ResolveOriginalCsvFiles();
     }
 
     private string[] ResolveOriginalCsvFiles()
     {
         return Directory.Exists(_options.OriginalCsvDir)
             ? Directory.GetFiles(_options.OriginalCsvDir, "*.csv").OrderBy(x => x).ToArray()
+            : [];
+    }
+
+    private string? ResolveSourceCsvDirectory()
+    {
+        return ResolveUploadedDatasetFiles().Any(path => Path.GetExtension(path).Equals(".csv", StringComparison.OrdinalIgnoreCase))
+            ? _options.UploadedDatasetDir
+            : _options.OriginalCsvDir;
+    }
+
+    private bool HasUploadedDataset()
+    {
+        return ResolveUploadedDatasetFiles().Length > 0;
+    }
+
+    private string[] ResolveUploadedDatasetFiles()
+    {
+        return Directory.Exists(_options.UploadedDatasetDir)
+            ? Directory.GetFiles(_options.UploadedDatasetDir)
+                .Where(path =>
+                    Path.GetExtension(path).Equals(".csv", StringComparison.OrdinalIgnoreCase)
+                    || Path.GetExtension(path).Equals(".parquet", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(x => x)
+                .ToArray()
             : [];
     }
 
@@ -224,12 +285,15 @@ public sealed class DuckDbRouteStore
     private string BuildManifest()
     {
         var sourcePaths = new List<string>();
-        var csvFiles = ResolveOriginalCsvFiles();
+        var csvFiles = ResolveSourceCsvFiles();
         var geocode = ResolveAuxiliaryCachePath("geocode_addresses.parquet");
-        if (csvFiles.Length > 0 && geocode is not null)
+        if (csvFiles.Length > 0)
         {
             sourcePaths.AddRange(csvFiles);
-            sourcePaths.Add(geocode);
+            if (geocode is not null)
+            {
+                sourcePaths.Add(geocode);
+            }
         }
         else if (ResolveStopsParquetPath() is { } stops)
         {
@@ -237,11 +301,14 @@ public sealed class DuckDbRouteStore
         }
 
         AddResolvedSource(sourcePaths, "hdv_chargers.parquet");
-        AddResolvedSource(sourcePaths, "osrm_routes_full.parquet");
-        foreach (var variant in Variants)
+        if (!HasUploadedDataset())
         {
-            AddResolvedSource(sourcePaths, $"agg_weighted_edges_{variant}.parquet");
-            AddResolvedSource(sourcePaths, $"agg_road_heatmap_{variant}.parquet");
+            AddResolvedSource(sourcePaths, "osrm_routes_full.parquet");
+            foreach (var variant in Variants)
+            {
+                AddResolvedSource(sourcePaths, $"agg_weighted_edges_{variant}.parquet");
+                AddResolvedSource(sourcePaths, $"agg_road_heatmap_{variant}.parquet");
+            }
         }
 
         var payload = new
@@ -282,59 +349,121 @@ public sealed class DuckDbRouteStore
             infos.Length == 0 ? null : infos.Max(info => info.LastWriteTimeUtc));
     }
 
-    private static void CreateStopsFromOriginalCsvs(DuckDBConnection connection, IReadOnlyList<string> csvFiles, string geocodePath)
+    private static void CreateStopsFromCsvs(DuckDBConnection connection, IReadOnlyList<string> csvFiles, string? geocodePath)
     {
+        Execute(connection,
+            $$"""
+            CREATE OR REPLACE TEMP TABLE raw_csv AS
+            SELECT *
+            FROM read_csv(
+                {{SqlStringArray(csvFiles)}},
+                header = true,
+                all_varchar = true,
+                union_by_name = true,
+                filename = true
+            );
+            """);
+
+        var columns = GetColumns(connection, "raw_csv");
+        var vehicle = CoalesceTextSql(columns, "Wagen Code", "wagencode", "wagen_code", "vehicle_id", "vehicle_code", "voertuig", "truck_id");
+        var carrier = CoalesceTextSql(columns, "Voertuig Type Eigenaar", "vervoerder", "carrier", "carrier_name", "transporteur");
+        var carrierType = CoalesceTextSql(columns, "vervoerder_type", "carrier_type", "transport_type");
+        var vehicleType = CoalesceTextSql(columns, "Wagentype Omschrijving", "wagentype_omschrijving", "vehicle_type", "truck_type");
+        var tripId = CoalesceTextSql(columns, "Tripnummer", "trip_id", "rit_id", "ritnummer", "route_id");
+        var action = CoalesceTextSql(columns, "Actie soort", "actie", "action", "action_type");
+        var address = CoalesceTextSql(columns, "Adres", "adres", "address", "location_address", "stop_address", "locatie", "location");
+        var locationName = CoalesceTextSql(columns, "locatie_naam", "location_name", "name", "naam", "Adres", "adres", "address");
+        var licensePlate = CoalesceTextSql(columns, "Gerealizeerd Kenteken", "kenteken", "license_plate", "licence_plate", "plate");
+        var plannedStart = CoalesceTimestampSql(
+            columns,
+            "Gepland vanaf (Trip actie)",
+            "planned_start",
+            "start_time",
+            "starttijd",
+            "Starttijd Trip",
+            "trip_start",
+            "trip_date",
+            "date",
+            "datum");
+        var plannedEnd = CoalesceTimestampSql(
+            columns,
+            "Gepland tot (Trip actie)",
+            "planned_end",
+            "end_time",
+            "eindtijd",
+            "Eindtijd Trip",
+            "trip_end",
+            "Gepland vanaf (Trip actie)",
+            "planned_start",
+            "trip_date",
+            "date",
+            "datum");
+        var distance = ParseDoubleSql(CoalesceTextSql(
+            columns,
+            "Totale Afstand (KM)",
+            "afstand_km_trip",
+            "trip_distance_km",
+            "trip_km",
+            "distance_km",
+            "afstand_km"));
+        var segmentDistance = ParseDoubleSql(CoalesceTextSql(columns, "afstand_km", "segment_km", "leg_km"));
+        var latColumn = TryColumnSql(columns, "lat", "latitude", "breedtegraad", "y");
+        var lonColumn = TryColumnSql(columns, "lon", "lng", "longitude", "lengtegraad", "x");
+        var hasCoordinates = latColumn is not null && lonColumn is not null;
+        var actionFilter = TryColumnSql(columns, "Actie soort") is null
+            ? ""
+            : """WHERE lower(trim(COALESCE("Actie soort", ''))) = 'travel'""";
+
+        if (!hasCoordinates && geocodePath is null)
+        {
+            throw new InvalidOperationException("De dataset bevat geen lat/lon-kolommen en er is geen locatiekoppeling beschikbaar.");
+        }
+
+        var directLatSql = hasCoordinates ? ParseDoubleSql(latColumn!) : "NULL";
+        var directLonSql = hasCoordinates ? ParseDoubleSql(lonColumn!) : "NULL";
+        var latSql = hasCoordinates ? "t.direct_lat" : "CAST(g.lat AS DOUBLE)";
+        var lonSql = hasCoordinates ? "t.direct_lon" : "CAST(g.lon AS DOUBLE)";
+        var fromSql = hasCoordinates
+            ? "typed t"
+            : $"typed t LEFT JOIN read_parquet({SqlString(geocodePath!)}) g ON t.adres = CAST(g.query AS VARCHAR)";
+
         Execute(connection,
             $$"""
             CREATE OR REPLACE TABLE stops AS
             WITH raw AS (
                 SELECT *
-                FROM read_csv(
-                    {{SqlStringArray(csvFiles)}},
-                    header = true,
-                    all_varchar = true,
-                    union_by_name = true,
-                    filename = true
-                )
-                WHERE lower(trim(COALESCE("Actie soort", ''))) = 'travel'
+                FROM raw_csv
+                {{actionFilter}}
             ),
             typed AS (
                 SELECT
-                    trim(COALESCE("Voertuig Type Eigenaar", '')) AS vervoerder,
-                    trim(COALESCE("Wagen Code", '')) AS wagencode,
-                    trim(COALESCE("Wagentype Omschrijving", '')) AS wagentype_omschrijving,
-                    trim(COALESCE("Tripnummer", '')) AS trip_id,
-                    trim(COALESCE("Actie soort", '')) AS acties,
-                    trim(COALESCE("Adres", '')) AS adres,
-                    upper(trim(COALESCE("Gerealizeerd Kenteken", ''))) AS kenteken,
-                    regexp_replace(upper(trim(COALESCE("Gerealizeerd Kenteken", ''))), '[^A-Z0-9]', '', 'g') AS kenteken_norm,
-                    COALESCE(
-                        {{ParseTimestampSql("\"Gepland vanaf (Trip actie)\"")}},
-                        {{ParseTimestampSql("\"Starttijd Trip\"")}}
-                    ) AS gepland_start,
-                    COALESCE(
-                        {{ParseTimestampSql("\"Gepland tot (Trip actie)\"")}},
-                        {{ParseTimestampSql("\"Eindtijd Trip\"")}},
-                        {{ParseTimestampSql("\"Gepland vanaf (Trip actie)\"")}},
-                        {{ParseTimestampSql("\"Starttijd Trip\"")}}
-                    ) AS gepland_eind,
-                    {{ParseDoubleSql("\"Totale Afstand (KM)\"")}} AS afstand_km_trip
+                    trim({{carrier}}) AS vervoerder,
+                    trim({{carrierType}}) AS vervoerder_type_raw,
+                    trim({{vehicle}}) AS wagencode,
+                    trim({{vehicleType}}) AS wagentype_omschrijving,
+                    trim({{tripId}}) AS trip_id,
+                    trim({{action}}) AS acties,
+                    trim({{locationName}}) AS locatie_naam,
+                    trim({{address}}) AS adres,
+                    upper(trim({{licensePlate}})) AS kenteken,
+                    regexp_replace(upper(trim({{licensePlate}})), '[^A-Z0-9]', '', 'g') AS kenteken_norm,
+                    {{plannedStart}} AS gepland_start,
+                    {{plannedEnd}} AS gepland_eind,
+                    {{distance}} AS afstand_km_trip,
+                    {{segmentDistance}} AS afstand_km_segment,
+                    {{directLatSql}} AS direct_lat,
+                    {{directLonSql}} AS direct_lon
                 FROM raw
             ),
             geocoded AS (
                 SELECT
                     t.*,
-                    CAST(g.lat AS DOUBLE) AS lat,
-                    CAST(g.lon AS DOUBLE) AS lon
-                FROM typed t
-                LEFT JOIN read_parquet({{SqlString(geocodePath)}}) g
-                    ON t.adres = CAST(g.query AS VARCHAR)
+                    {{latSql}} AS lat,
+                    {{lonSql}} AS lon
+                FROM {{fromSql}}
                 WHERE t.wagencode <> ''
                     AND t.trip_id <> ''
-                    AND t.adres <> ''
                     AND t.gepland_start IS NOT NULL
-                    AND g.lat IS NOT NULL
-                    AND g.lon IS NOT NULL
             ),
             sequenced AS (
                 SELECT
@@ -350,6 +479,8 @@ public sealed class DuckDbRouteStore
                 wagencode,
                 vervoerder,
                 CASE
+                    WHEN lower(vervoerder_type_raw) LIKE '%eigen%' OR lower(vervoerder_type_raw) LIKE '%own%' THEN 'eigen'
+                    WHEN lower(vervoerder_type_raw) LIKE '%charter%' OR lower(vervoerder_type_raw) LIKE '%sub%' THEN 'charter'
                     WHEN lower(vervoerder) LIKE '%eigen%' THEN 'eigen'
                     WHEN lower(vervoerder) LIKE '%uitbesteed%' OR lower(vervoerder) LIKE '%charter%' THEN 'charter'
                     ELSE 'onbekend'
@@ -358,11 +489,11 @@ public sealed class DuckDbRouteStore
                 trip_id,
                 CAST(stop_seq AS INTEGER) AS stop_seq,
                 acties,
-                adres AS locatie_naam,
+                COALESCE(NULLIF(locatie_naam, ''), adres) AS locatie_naam,
                 adres,
                 gepland_start,
                 gepland_eind,
-                0.0 AS afstand_km,
+                COALESCE(afstand_km_segment, 0.0) AS afstand_km,
                 COALESCE(afstand_km_trip, 0.0) AS afstand_km_trip,
                 GREATEST(COALESCE(date_diff('second', gepland_start, gepland_eind), 0) / 60.0, 0.0) AS dwell_min,
                 lat,
@@ -376,7 +507,9 @@ public sealed class DuckDbRouteStore
                 NULL AS gewicht_na_stop,
                 NULL AS rijtijd_min,
                 NULL AS laad_los
-            FROM sequenced;
+            FROM sequenced
+            WHERE lat IS NOT NULL
+                AND lon IS NOT NULL;
             """);
     }
 
@@ -596,6 +729,65 @@ public sealed class DuckDbRouteStore
         }
     }
 
+    private static IReadOnlyDictionary<string, string> GetColumns(DuckDBConnection connection, string relation)
+    {
+        var columns = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"DESCRIBE SELECT * FROM {relation};";
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var column = Convert.ToString(reader["column_name"]) ?? "";
+            if (!string.IsNullOrWhiteSpace(column))
+            {
+                columns[column.Trim()] = column;
+            }
+        }
+
+        return columns;
+    }
+
+    private static string? TryColumnSql(IReadOnlyDictionary<string, string> columns, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (columns.TryGetValue(name, out var column))
+            {
+                return QuoteIdentifier(column);
+            }
+        }
+
+        return null;
+    }
+
+    private static string CoalesceTextSql(IReadOnlyDictionary<string, string> columns, params string[] names)
+    {
+        var matches = names
+            .Select(name => columns.TryGetValue(name, out var column) ? QuoteIdentifier(column) : null)
+            .Where(column => column is not null)
+            .Cast<string>()
+            .Distinct()
+            .ToArray();
+
+        return matches.Length == 0
+            ? "''"
+            : $"COALESCE({string.Join(", ", matches)}, '')";
+    }
+
+    private static string CoalesceTimestampSql(IReadOnlyDictionary<string, string> columns, params string[] names)
+    {
+        var matches = names
+            .Select(name => columns.TryGetValue(name, out var column) ? ParseTimestampSql(QuoteIdentifier(column)) : null)
+            .Where(column => column is not null)
+            .Cast<string>()
+            .Distinct()
+            .ToArray();
+
+        return matches.Length == 0
+            ? "NULL"
+            : $"COALESCE({string.Join(", ", matches)})";
+    }
+
     private static bool HasColumn(DuckDBConnection connection, string relation, string column)
     {
         using var command = connection.CreateCommand();
@@ -610,9 +802,22 @@ public sealed class DuckDbRouteStore
         command.ExecuteNonQuery();
     }
 
+    private static void DeleteFileIfExists(string path)
+    {
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+    }
+
     internal static string SqlString(string value)
     {
         return "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
+    }
+
+    private static string QuoteIdentifier(string value)
+    {
+        return "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
     }
 
     private static string SqlStringArray(IEnumerable<string> values)
@@ -630,7 +835,10 @@ public sealed class DuckDbRouteStore
                 try_strptime({value}, '%d/%m/%Y %H:%M:%S'),
                 try_strptime({value}, '%d/%m/%Y %H:%M'),
                 try_strptime({value}, '%Y-%m-%d %H:%M:%S'),
-                try_strptime({value}, '%Y-%m-%d %H:%M')
+                try_strptime({value}, '%Y-%m-%d %H:%M'),
+                try_strptime({value}, '%d-%m-%Y'),
+                try_strptime({value}, '%d/%m/%Y'),
+                try_strptime({value}, '%Y-%m-%d')
             )
             """;
     }

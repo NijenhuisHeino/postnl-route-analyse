@@ -1,4 +1,0 @@
-<Solution>
-  <Project Path="tests/Postnl.LaadinfrastructuurPlanner.Tests/Postnl.LaadinfrastructuurPlanner.Tests.csproj" />
-  <Project Path="src/Postnl.LaadinfrastructuurPlanner/Postnl.LaadinfrastructuurPlanner.csproj" />
-</Solution>

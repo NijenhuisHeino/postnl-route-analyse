@@ -1,13 +1,13 @@
 using DuckDB.NET.Data;
 
-namespace Postnl.LaadinfrastructuurPlanner.Tests;
+namespace LaadinfrastructuurPlanner.Tests;
 
 internal static class TestParquetData
 {
     public static void WriteAll(string cacheDir)
     {
         Directory.CreateDirectory(cacheDir);
-        WriteStopsParquet(Path.Combine(cacheDir, "postnl_csv_Test.parquet"));
+        WriteStopsParquet(Path.Combine(cacheDir, "route_stops_Test.parquet"));
         WriteRoadParquets(cacheDir);
         WriteChargersParquet(Path.Combine(cacheDir, "hdv_chargers.parquet"));
     }

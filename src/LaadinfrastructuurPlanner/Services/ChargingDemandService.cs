@@ -1,8 +1,8 @@
 using System.Data.Common;
 using System.Globalization;
-using Postnl.LaadinfrastructuurPlanner.Models;
+using LaadinfrastructuurPlanner.Models;
 
-namespace Postnl.LaadinfrastructuurPlanner.Services;
+namespace LaadinfrastructuurPlanner.Services;
 
 public sealed partial class RouteAnalysisService
 {

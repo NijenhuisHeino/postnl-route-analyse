@@ -1,4 +1,4 @@
-namespace Postnl.LaadinfrastructuurPlanner.Services;
+namespace LaadinfrastructuurPlanner.Services;
 
 public sealed class PlannerWarmupService : IHostedService
 {

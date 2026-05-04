@@ -20,7 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Postnl.LaadinfrastructuurPlanner\Postnl.LaadinfrastructuurPlanner.csproj" />
+    <ProjectReference Include="..\..\src\LaadinfrastructuurPlanner\LaadinfrastructuurPlanner.csproj" />
   </ItemGroup>
 
 </Project>

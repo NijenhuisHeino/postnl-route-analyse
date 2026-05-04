@@ -1,14 +1,14 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
-using Postnl.LaadinfrastructuurPlanner.Models;
-using Postnl.LaadinfrastructuurPlanner.Services;
+using LaadinfrastructuurPlanner.Models;
+using LaadinfrastructuurPlanner.Services;
 
-namespace Postnl.LaadinfrastructuurPlanner.Tests;
+namespace LaadinfrastructuurPlanner.Tests;
 
 public sealed class RouteAnalysisServiceTests : IDisposable
 {
-    private readonly string _root = Path.Combine(Path.GetTempPath(), "postnl-planner-tests", Guid.NewGuid().ToString("N"));
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "route-analysis-tests", Guid.NewGuid().ToString("N"));
     private readonly RouteAnalysisService _service;
 
     public RouteAnalysisServiceTests()
@@ -20,6 +20,7 @@ public sealed class RouteAnalysisServiceTests : IDisposable
         {
             RepoRoot = _root,
             CacheDir = cacheDir,
+            UploadedDatasetDir = Path.Combine(cacheDir, "uploaded-dataset", "active"),
             DuckDbPath = Path.Combine(cacheDir, "planner", "route-analysis.duckdb"),
             ManifestPath = Path.Combine(cacheDir, "planner", "manifest.json"),
         };

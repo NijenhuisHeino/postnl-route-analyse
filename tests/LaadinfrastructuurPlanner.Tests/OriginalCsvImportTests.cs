@@ -1,13 +1,13 @@
 using DuckDB.NET.Data;
 using Microsoft.Extensions.Caching.Memory;
-using Postnl.LaadinfrastructuurPlanner.Models;
-using Postnl.LaadinfrastructuurPlanner.Services;
+using LaadinfrastructuurPlanner.Models;
+using LaadinfrastructuurPlanner.Services;
 
-namespace Postnl.LaadinfrastructuurPlanner.Tests;
+namespace LaadinfrastructuurPlanner.Tests;
 
 public sealed class OriginalCsvImportTests : IDisposable
 {
-    private readonly string _root = Path.Combine(Path.GetTempPath(), "postnl-planner-csv-tests", Guid.NewGuid().ToString("N"));
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "route-analysis-csv-tests", Guid.NewGuid().ToString("N"));
 
     [Fact]
     public async Task OriginalMonthlyCsvsAreMaterializedIntoPlannerCache()
@@ -23,6 +23,7 @@ public sealed class OriginalCsvImportTests : IDisposable
         {
             RepoRoot = _root,
             CacheDir = cacheDir,
+            UploadedDatasetDir = Path.Combine(cacheDir, "uploaded-dataset", "active"),
             DuckDbPath = Path.Combine(cacheDir, "planner", "route-analysis.duckdb"),
             ManifestPath = Path.Combine(cacheDir, "planner", "manifest.json"),
             OriginalCsvDir = csvDir,
@@ -31,7 +32,7 @@ public sealed class OriginalCsvImportTests : IDisposable
 
         var metadata = await service.GetMetadataAsync();
         Assert.True(metadata.DataAvailable);
-        Assert.Equal("Ritdata 2025 (1 maand)", metadata.DataSource);
+        Assert.Equal("Ritdata (1 bestand)", metadata.DataSource);
         Assert.Equal(5, metadata.StopCount);
         Assert.Equal(new DateOnly(2026, 1, 1), metadata.MinDate);
         Assert.Equal(new DateOnly(2026, 1, 2), metadata.MaxDate);
@@ -56,6 +57,40 @@ public sealed class OriginalCsvImportTests : IDisposable
         var plateSummary = await service.GetSummaryAsync(new AnalysisFilter { Wagencodes = ["11BZX8"] });
         Assert.Equal(5, plateSummary.Stops);
         Assert.Equal(300.5, plateSummary.TotalKm);
+    }
+
+    [Fact]
+    public async Task GenericUploadedCsvWithCoordinatesCanBeMaterialized()
+    {
+        var cacheDir = Path.Combine(_root, ".cache-generic");
+        var uploadDir = Path.Combine(cacheDir, "uploaded-dataset", "active");
+        Directory.CreateDirectory(uploadDir);
+        File.WriteAllLines(Path.Combine(uploadDir, "routes.csv"),
+        [
+            "vehicle_id,trip_id,trip_date,planned_start,planned_end,lat,lon,address,distance_km,carrier_type,license_plate",
+            "TRUCK-1,RIT-1,2026-02-01,2026-02-01 08:00:00,2026-02-01 08:15:00,52.10,5.10,Depot,42,eigen,AB-12-CD",
+            "TRUCK-1,RIT-1,2026-02-01,2026-02-01 09:00:00,2026-02-01 09:10:00,52.20,5.20,Klant,42,eigen,AB-12-CD"
+        ]);
+
+        var options = new RouteAnalysisOptions
+        {
+            RepoRoot = _root,
+            CacheDir = cacheDir,
+            UploadedDatasetDir = uploadDir,
+            DuckDbPath = Path.Combine(cacheDir, "planner", "route-analysis.duckdb"),
+            ManifestPath = Path.Combine(cacheDir, "planner", "manifest.json"),
+        };
+        var service = new RouteAnalysisService(new DuckDbRouteStore(options), new MemoryCache(new MemoryCacheOptions()));
+
+        var metadata = await service.GetMetadataAsync();
+        Assert.True(metadata.DataAvailable);
+        Assert.Equal("Eigen dataset", metadata.DataSource);
+        Assert.Equal(2, metadata.StopCount);
+        Assert.Equal(new DateOnly(2026, 2, 1), metadata.MinDate);
+
+        var summary = await service.GetSummaryAsync(new AnalysisFilter());
+        Assert.Equal(1, summary.Trips);
+        Assert.Equal(42, summary.TotalKm);
     }
 
     public void Dispose()

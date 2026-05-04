@@ -1,14 +1,16 @@
 using System.Data.Common;
 using System.Text.Json;
 using DuckDB.NET.Data;
+using Microsoft.AspNetCore.Components.Forms;
 using Microsoft.Extensions.Caching.Memory;
-using Postnl.LaadinfrastructuurPlanner.Models;
+using LaadinfrastructuurPlanner.Models;
 
-namespace Postnl.LaadinfrastructuurPlanner.Services;
+namespace LaadinfrastructuurPlanner.Services;
 
 public sealed partial class RouteAnalysisService
 {
     private const int HeatAggregationThreshold = 50_000;
+    private const long MaxDatasetFileBytes = 2L * 1024 * 1024 * 1024;
     private static readonly JsonSerializerOptions CacheJsonOptions = new(JsonSerializerDefaults.Web);
     private readonly DuckDbRouteStore _store;
     private readonly IMemoryCache _cache;
@@ -17,6 +19,71 @@ public sealed partial class RouteAnalysisService
     {
         _store = store;
         _cache = cache;
+    }
+
+    public async Task<DatasetUploadResult> ReplaceDatasetAsync(IReadOnlyList<IBrowserFile> files, CancellationToken cancellationToken = default)
+    {
+        var acceptedFiles = files
+            .Where(file => IsAcceptedDatasetFile(file.Name))
+            .ToArray();
+        if (acceptedFiles.Length == 0)
+        {
+            return new DatasetUploadResult(false, "Upload minimaal een CSV- of parquetbestand.", null, 0, 0);
+        }
+
+        var uploadRoot = Path.GetDirectoryName(_store.Options.UploadedDatasetDir)!;
+        var pending = Path.Combine(uploadRoot, "pending-" + Guid.NewGuid().ToString("N"));
+        var backup = Path.Combine(uploadRoot, "backup-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(uploadRoot);
+        Directory.CreateDirectory(pending);
+
+        try
+        {
+            long totalBytes = 0;
+            foreach (var file in acceptedFiles)
+            {
+                var fileName = SafeFileName(file.Name);
+                var target = Path.Combine(pending, fileName);
+                await using var source = file.OpenReadStream(MaxDatasetFileBytes, cancellationToken);
+                await using var destination = File.Create(target);
+                await source.CopyToAsync(destination, cancellationToken);
+                totalBytes += new FileInfo(target).Length;
+            }
+
+            if (Directory.Exists(_store.Options.UploadedDatasetDir))
+            {
+                Directory.Move(_store.Options.UploadedDatasetDir, backup);
+            }
+
+            Directory.Move(pending, _store.Options.UploadedDatasetDir);
+
+            try
+            {
+                await _store.ResetAsync(cancellationToken);
+                ClearCache();
+                var metadata = await GetMetadataAsync(cancellationToken);
+                return metadata.DataAvailable
+                    ? new DatasetUploadResult(true, "Dataset verwerkt en actief gemaakt.", metadata.DataSource, acceptedFiles.Length, totalBytes)
+                    : new DatasetUploadResult(false, "Dataset is opgeslagen, maar bevat geen bruikbare ritregels.", null, acceptedFiles.Length, totalBytes);
+            }
+            catch (Exception ex)
+            {
+                DeleteDirectoryIfExists(_store.Options.UploadedDatasetDir);
+                if (Directory.Exists(backup))
+                {
+                    Directory.Move(backup, _store.Options.UploadedDatasetDir);
+                }
+
+                await _store.ResetAsync(cancellationToken);
+                ClearCache();
+                return new DatasetUploadResult(false, $"Dataset kon niet worden verwerkt: {ex.Message}", null, acceptedFiles.Length, totalBytes);
+            }
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(pending);
+            DeleteDirectoryIfExists(backup);
+        }
     }
 
     public async Task<MetadataResponse> GetMetadataAsync(CancellationToken cancellationToken = default)
@@ -786,6 +853,40 @@ public sealed partial class RouteAnalysisService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    private static bool IsAcceptedDatasetFile(string fileName)
+    {
+        var extension = Path.GetExtension(fileName);
+        return extension.Equals(".csv", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".parquet", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string SafeFileName(string fileName)
+    {
+        var name = Path.GetFileName(fileName);
+        foreach (var invalid in Path.GetInvalidFileNameChars())
+        {
+            name = name.Replace(invalid, '_');
+        }
+
+        return string.IsNullOrWhiteSpace(name) ? "dataset.csv" : name;
+    }
+
+    private void ClearCache()
+    {
+        if (_cache is MemoryCache memoryCache)
+        {
+            memoryCache.Clear();
+        }
+    }
+
+    private static void DeleteDirectoryIfExists(string path)
+    {
+        if (Directory.Exists(path))
+        {
+            Directory.Delete(path, recursive: true);
+        }
     }
 
     private static async Task<long> ScalarLongAsync(DuckDBConnection connection, string sql, CancellationToken cancellationToken)

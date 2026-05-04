@@ -1,11 +1,11 @@
-# PostNL Laadinfrastructuur Planner
+# Laadinfrastructuur Planner
 
 Hoofdapp voor depot-, rit- en corridoranalyse voor laadinfrastructuur. De planner helpt bepalen waar laadcapaciteit nodig is, hoeveel vermogen per locatie passend is en wanneer publieke corridor-lading nodig wordt.
 
 ## Lokaal starten
 
 ```bash
-PATH="$HOME/.dotnet:$PATH" dotnet run --project src/Postnl.LaadinfrastructuurPlanner
+PATH="$HOME/.dotnet:$PATH" dotnet run --project src/LaadinfrastructuurPlanner
 ```
 
 Open daarna:
@@ -16,35 +16,35 @@ http://localhost:5198
 
 ## Mappen
 
-- `src/Postnl.LaadinfrastructuurPlanner`: de planner-app.
-- `tests/Postnl.LaadinfrastructuurPlanner.Tests`: controles op data-inlees, filters, kaartlagen, depots, wegvlakken en laadscenario's.
+- `src/LaadinfrastructuurPlanner`: de planner-app.
+- `tests/LaadinfrastructuurPlanner.Tests`: controles op data-inlees, filters, kaartlagen, depots, wegvlakken en laadscenario's.
 - `.cache/planner`: lokale werkset die automatisch wordt ververst wanneer brondata wijzigt.
 
 ## Data
 
-De planner leest de PostNL ritbestanden, locatiekoppelingen en laadlocaties uit de projectdata-map op deze Mac. Grote bronbestanden en lokale werksets blijven buiten Git.
+De planner leest ritbestanden, locatiekoppelingen en laadlocaties uit een lokale werkset. Grote bronbestanden, klantdata en lokale werksets blijven buiten Git.
+
+Via de app kan een eigen dataset worden geupload als CSV of parquet. Voor CSV verwacht de planner kolommen voor voertuig, rit, start/eind, afstand en bij voorkeur `lat`/`lon`. Zonder `lat`/`lon` is een lokale locatiekoppeling nodig.
 
 Gebruik deze variabelen wanneer de data op een andere plek staat:
 
 ```bash
-POSTNL_ORIGINAL_CSV_DIR=/pad/naar/rittendata
-POSTNL_EXTERNAL_CACHE_DIR=/pad/naar/cache-backup
+ROUTE_ANALYSIS_ORIGINAL_CSV_DIR=/pad/naar/rittendata
+ROUTE_ANALYSIS_EXTERNAL_CACHE_DIR=/pad/naar/cache-backup
 ```
 
-Voor de vaste productie-service wordt alleen de lokale werkset gebruikt:
+## Toegang
 
-```bash
-POSTNL_USE_DEFAULT_DATA_ROOT=false
-```
+De productie-URL loopt achter Cloudflare Access. Gebruikers moeten eerst met e-mail inloggen voordat de planner of API bereikbaar is.
 
 ## Testen
 
 ```bash
-PATH="$HOME/.dotnet:$PATH" dotnet test Postnl.LaadinfrastructuurPlanner.slnx
+PATH="$HOME/.dotnet:$PATH" dotnet test LaadinfrastructuurPlanner.slnx
 ```
 
 ## Publiceren
 
 ```bash
-PATH="$HOME/.dotnet:$PATH" dotnet publish src/Postnl.LaadinfrastructuurPlanner -c Release -o .deploy/route-analyse
+PATH="$HOME/.dotnet:$PATH" dotnet publish src/LaadinfrastructuurPlanner -c Release -o .deploy/route-analyse
 ```

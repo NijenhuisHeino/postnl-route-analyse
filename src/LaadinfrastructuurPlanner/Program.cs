@@ -1,11 +1,16 @@
-using Postnl.LaadinfrastructuurPlanner.Components;
-using Postnl.LaadinfrastructuurPlanner.Endpoints;
-using Postnl.LaadinfrastructuurPlanner.Services;
+using LaadinfrastructuurPlanner.Components;
+using LaadinfrastructuurPlanner.Endpoints;
+using LaadinfrastructuurPlanner.Services;
+using Microsoft.AspNetCore.SignalR;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
+builder.Services.Configure<HubOptions>(options =>
+{
+    options.MaximumReceiveMessageSize = 10 * 1024 * 1024;
+});
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton(_ => RouteAnalysisOptionsFactory.FromContentRoot(builder.Environment.ContentRootPath));
 builder.Services.AddSingleton<DuckDbRouteStore>();

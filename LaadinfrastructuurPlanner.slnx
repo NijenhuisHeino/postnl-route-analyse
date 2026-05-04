@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="tests/LaadinfrastructuurPlanner.Tests/LaadinfrastructuurPlanner.Tests.csproj" />
+  <Project Path="src/LaadinfrastructuurPlanner/LaadinfrastructuurPlanner.csproj" />
+</Solution>

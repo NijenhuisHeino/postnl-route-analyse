@@ -1,8 +1,8 @@
-using Postnl.LaadinfrastructuurPlanner.Models;
-using Postnl.LaadinfrastructuurPlanner.Services;
+using LaadinfrastructuurPlanner.Models;
+using LaadinfrastructuurPlanner.Services;
 using Microsoft.AspNetCore.Mvc;
 
-namespace Postnl.LaadinfrastructuurPlanner.Endpoints;
+namespace LaadinfrastructuurPlanner.Endpoints;
 
 public static class PlannerApiEndpoints
 {

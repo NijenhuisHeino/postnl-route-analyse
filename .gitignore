@@ -20,7 +20,7 @@ TestResults/
 .deploy/
 *.user
 
-# Data (never commit PostNL trip data)
+# Data (never commit route or customer data)
 data/
 .cache/
 *.xlsx

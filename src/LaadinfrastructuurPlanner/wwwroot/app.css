@@ -115,7 +115,8 @@ td span,
 
 .filter-group,
 .filter-grid,
-.cache-status {
+.cache-status,
+.upload-panel {
   margin-top: 18px;
 }
 
@@ -241,6 +242,61 @@ td span,
 
 .cache-status strong {
   color: var(--eta-purple);
+}
+
+.upload-panel {
+  display: grid;
+  gap: 9px;
+  padding: 14px;
+  border: 1px solid var(--eta-border);
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12px;
+}
+
+.upload-panel strong,
+.upload-panel span {
+  display: block;
+}
+
+.upload-panel strong {
+  color: var(--eta-purple);
+}
+
+.upload-panel span,
+.upload-panel p {
+  color: var(--eta-muted);
+}
+
+.upload-panel p {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.upload-panel input[type="file"] {
+  width: 100%;
+  padding: 8px;
+  border: 1px dashed var(--eta-border);
+  border-radius: 7px;
+  background: #fbfbfd;
+  font-size: 12px;
+}
+
+.upload-status {
+  padding: 8px 9px;
+  border-radius: 7px;
+  background: var(--eta-soft);
+  font-weight: 700;
+}
+
+.upload-status.ok {
+  background: #edf9f0;
+  color: var(--eta-ok);
+}
+
+.upload-status.error {
+  background: #fff1f1;
+  color: var(--eta-danger);
 }
 
 .planner-main {

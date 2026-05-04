@@ -1,4 +1,4 @@
-window.postnlPlannerMap = (() => {
+window.routePlannerMap = (() => {
   let map;
   let abortController;
   let dotNetRef;
@@ -331,7 +331,7 @@ window.postnlPlannerMap = (() => {
     update: async (filter, chargerFilter, overnightFilter, options) => {
       if (!map) return;
       if (!isStyleReady()) {
-        window.setTimeout(() => window.postnlPlannerMap.update(filter, chargerFilter, overnightFilter, options), 100);
+        window.setTimeout(() => window.routePlannerMap.update(filter, chargerFilter, overnightFilter, options), 100);
         return;
       }
       addLayers();

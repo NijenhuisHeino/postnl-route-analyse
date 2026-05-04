@@ -1,4 +1,4 @@
-namespace Postnl.LaadinfrastructuurPlanner.Models;
+namespace LaadinfrastructuurPlanner.Models;
 
 public record AnalysisFilter
 {
@@ -47,6 +47,13 @@ public sealed record MetadataResponse(
     string[] Vervoerders,
     string[] Wagencodes,
     CacheFileStatus[] CacheFiles);
+
+public sealed record DatasetUploadResult(
+    bool Success,
+    string Message,
+    string? DataSource,
+    long FileCount,
+    long SizeBytes);
 
 public sealed record SummaryResponse(
     long Stops,
