@@ -889,6 +889,7 @@ public sealed partial class RouteAnalysisService
             RoadThreshold = request.RoadThreshold,
             RoadTopPercent = request.RoadTopPercent,
             MarkerTopN = request.MarkerTopN,
+            ZeZoneMode = request.ZeZoneMode,
         };
         var normalized = NormalizeFilter(filter);
         return request with
@@ -902,6 +903,7 @@ public sealed partial class RouteAnalysisService
             RoadThreshold = normalized.RoadThreshold,
             RoadTopPercent = normalized.RoadTopPercent,
             MarkerTopN = normalized.MarkerTopN,
+            ZeZoneMode = normalized.ZeZoneMode,
             MinVehicles = Math.Clamp(request.MinVehicles, 1, 1000),
             Scenario = NormalizeScenario(request.Scenario),
         };
@@ -921,6 +923,7 @@ public sealed partial class RouteAnalysisService
             RoadThreshold = normalized.RoadThreshold,
             RoadTopPercent = normalized.RoadTopPercent,
             MarkerTopN = normalized.MarkerTopN,
+            ZeZoneMode = normalized.ZeZoneMode,
             DepotId = request.DepotId.Trim(),
             Scenario = NormalizeScenario(request.Scenario),
         };
@@ -940,6 +943,7 @@ public sealed partial class RouteAnalysisService
             RoadThreshold = normalized.RoadThreshold,
             RoadTopPercent = normalized.RoadTopPercent,
             MarkerTopN = normalized.MarkerTopN,
+            ZeZoneMode = normalized.ZeZoneMode,
             Lat = Math.Clamp(request.Lat, -90, 90),
             Lon = Math.Clamp(request.Lon, -180, 180),
             Label = request.Label?.Trim(),
@@ -963,6 +967,7 @@ public sealed partial class RouteAnalysisService
             RoadThreshold = normalized.RoadThreshold,
             RoadTopPercent = normalized.RoadTopPercent,
             MarkerTopN = normalized.MarkerTopN,
+            ZeZoneMode = normalized.ZeZoneMode,
             Road = road with { RadiusKm = Math.Clamp(road.RadiusKm, 0.2, 20) },
             Scenario = NormalizeScenario(request.Scenario),
         };
@@ -998,6 +1003,7 @@ public sealed partial class RouteAnalysisService
         AddIn(parts, "vervoerder_type", filter.VervoerderTypes);
         AddIn(parts, "vervoerder", filter.Vervoerders);
         AddVehicleIn(parts, filter.Wagencodes);
+        AddZeZoneTripExistsFilter(parts, filter.ZeZoneMode, "daily_trips", includeTripId: true);
         return string.Join(" AND ", parts);
     }
 
@@ -1017,7 +1023,42 @@ public sealed partial class RouteAnalysisService
         AddIn(parts, "vervoerder_type", filter.VervoerderTypes);
         AddIn(parts, "vervoerder", filter.Vervoerders);
         AddVehicleIn(parts, filter.Wagencodes);
+        AddZeZoneTripExistsFilter(parts, filter.ZeZoneMode, "overnight_events", includeTripId: false);
         return string.Join(" AND ", parts);
+    }
+
+    private static void AddZeZoneTripExistsFilter(List<string> parts, string mode, string relation, bool includeTripId)
+    {
+        var tripMatch = includeTripId
+            ? $"AND CAST(s.trip_id AS VARCHAR) = CAST({relation}.trip_id AS VARCHAR)"
+            : "";
+
+        if (string.Equals(mode, "in", StringComparison.OrdinalIgnoreCase))
+        {
+            parts.Add($$"""
+                EXISTS (
+                    SELECT 1
+                    FROM stops s
+                    WHERE CAST(s.wagencode AS VARCHAR) = CAST({{relation}}.wagencode AS VARCHAR)
+                        AND CAST(s.trip_date AS DATE) = CAST({{relation}}.trip_date AS DATE)
+                        {{tripMatch}}
+                        AND COALESCE(CAST(s.in_zez AS BOOLEAN), false)
+                )
+                """);
+        }
+        else if (string.Equals(mode, "out", StringComparison.OrdinalIgnoreCase))
+        {
+            parts.Add($$"""
+                EXISTS (
+                    SELECT 1
+                    FROM stops s
+                    WHERE CAST(s.wagencode AS VARCHAR) = CAST({{relation}}.wagencode AS VARCHAR)
+                        AND CAST(s.trip_date AS DATE) = CAST({{relation}}.trip_date AS DATE)
+                        {{tripMatch}}
+                        AND NOT COALESCE(CAST(s.in_zez AS BOOLEAN), false)
+                )
+                """);
+        }
     }
 
     private static string BuildStopLocationWhere(StopLocationDetailRequest request)

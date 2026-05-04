@@ -17,6 +17,10 @@ public sealed class PlannerApiEndpointTests : IDisposable
     {
         var cacheDir = Path.Combine(_root, ".cache");
         TestParquetData.WriteAll(cacheDir);
+        var zeZonesPath = Path.Combine(cacheDir, "zez_pc6.csv");
+        File.WriteAllText(
+            zeZonesPath,
+            "pc6,ze_zone,ze_startdatum\n1234AB,Test ZE-zone,2025-01-01\n");
 
         await using var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
@@ -31,6 +35,7 @@ public sealed class PlannerApiEndpointTests : IDisposable
                         UploadedDatasetDir = Path.Combine(cacheDir, "uploaded-dataset", "active"),
                         DuckDbPath = Path.Combine(cacheDir, "planner", "route-analysis.duckdb"),
                         ManifestPath = Path.Combine(cacheDir, "planner", "manifest.json"),
+                        ZeZonesSourcePath = zeZonesPath,
                     });
                 });
             });
@@ -41,10 +46,14 @@ public sealed class PlannerApiEndpointTests : IDisposable
         Assert.NotNull(metadata);
         Assert.True(metadata.DataAvailable);
         Assert.Equal(8, metadata.StopCount);
+        Assert.Contains("Test ZE-zone", metadata.ZeZones);
 
         var summary = await PostAsync<SummaryResponse>(client, "/api/summary", new AnalysisFilter { VervoerderTypes = ["eigen"] });
         Assert.Equal(6, summary.Stops);
         Assert.Equal(300, summary.TotalKm);
+
+        var zeSummary = await PostAsync<SummaryResponse>(client, "/api/summary", new AnalysisFilter { ZeZoneMode = "in" });
+        Assert.Equal(4, zeSummary.Stops);
 
         var stops = await PostAsync<StopMapResponse>(client, "/api/map/stops", new AnalysisFilter());
         Assert.NotEmpty(stops.HeatPoints);

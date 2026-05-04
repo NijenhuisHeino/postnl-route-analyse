@@ -21,12 +21,12 @@ internal static class TestParquetData
             CREATE TABLE stops AS
             SELECT * FROM (
                 VALUES
-                ('W1', 'Eigen vervoer', 'eigen', DATE '2026-01-01', 'T1', 0, 'Origin', 'Depot A', 'Adres A', TIMESTAMP '2026-01-01 08:00:00', TIMESTAMP '2026-01-01 08:00:00', 0.0, 120.0, 10.0, 52.000, 5.000),
+                ('W1', 'Eigen vervoer', 'eigen', DATE '2026-01-01', 'T1', 0, 'Origin', 'Depot A', 'Adres A 1234 AB', TIMESTAMP '2026-01-01 08:00:00', TIMESTAMP '2026-01-01 08:00:00', 0.0, 120.0, 10.0, 52.000, 5.000),
                 ('W1', 'Eigen vervoer', 'eigen', DATE '2026-01-01', 'T1', 1, 'Stop', 'Hub B', 'Adres B', TIMESTAMP '2026-01-01 12:00:00', TIMESTAMP '2026-01-01 12:00:00', 60.0, 120.0, 20.0, 52.500, 5.500),
-                ('W1', 'Eigen vervoer', 'eigen', DATE '2026-01-01', 'T1', 2, 'Destination', 'Depot A', 'Adres A', TIMESTAMP '2026-01-01 18:00:00', TIMESTAMP '2026-01-01 18:00:00', 60.0, 120.0, 20.0, 52.000, 5.000),
-                ('W1', 'Eigen vervoer', 'eigen', DATE '2026-01-02', 'T2', 0, 'Origin', 'Depot A', 'Adres A', TIMESTAMP '2026-01-02 06:00:00', TIMESTAMP '2026-01-02 06:00:00', 0.0, 180.0, 5.0, 52.000, 5.000),
+                ('W1', 'Eigen vervoer', 'eigen', DATE '2026-01-01', 'T1', 2, 'Destination', 'Depot A', 'Adres A 1234 AB', TIMESTAMP '2026-01-01 18:00:00', TIMESTAMP '2026-01-01 18:00:00', 60.0, 120.0, 20.0, 52.000, 5.000),
+                ('W1', 'Eigen vervoer', 'eigen', DATE '2026-01-02', 'T2', 0, 'Origin', 'Depot A', 'Adres A 1234 AB', TIMESTAMP '2026-01-02 06:00:00', TIMESTAMP '2026-01-02 06:00:00', 0.0, 180.0, 5.0, 52.000, 5.000),
                 ('W1', 'Eigen vervoer', 'eigen', DATE '2026-01-02', 'T2', 1, 'Stop', 'Hub C', 'Adres C', TIMESTAMP '2026-01-02 11:00:00', TIMESTAMP '2026-01-02 11:00:00', 90.0, 180.0, 15.0, 52.200, 5.200),
-                ('W1', 'Eigen vervoer', 'eigen', DATE '2026-01-02', 'T2', 2, 'Destination', 'Depot A', 'Adres A', TIMESTAMP '2026-01-02 15:00:00', TIMESTAMP '2026-01-02 15:00:00', 90.0, 180.0, 15.0, 52.000, 5.000),
+                ('W1', 'Eigen vervoer', 'eigen', DATE '2026-01-02', 'T2', 2, 'Destination', 'Depot A', 'Adres A 1234 AB', TIMESTAMP '2026-01-02 15:00:00', TIMESTAMP '2026-01-02 15:00:00', 90.0, 180.0, 15.0, 52.000, 5.000),
                 ('W2', 'Uitbesteed vervoer', 'charter', DATE '2026-01-02', 'T3', 0, 'Origin', 'Depot C', 'Adres C', TIMESTAMP '2026-01-02 07:00:00', TIMESTAMP '2026-01-02 07:00:00', 0.0, 200.0, 5.0, 53.000, 6.000),
                 ('W2', 'Uitbesteed vervoer', 'charter', DATE '2026-01-02', 'T3', 1, 'Destination', 'Hub D', 'Adres D', TIMESTAMP '2026-01-02 17:00:00', TIMESTAMP '2026-01-02 17:00:00', 200.0, 200.0, 15.0, 51.900, 4.500)
             ) AS t(wagencode, vervoerder, vervoerder_type, trip_date, trip_id, stop_seq, acties, locatie_naam, adres, gepland_start, gepland_eind, afstand_km, afstand_km_trip, dwell_min, lat, lon);

@@ -104,6 +104,7 @@ public sealed partial class RouteAnalysisService
                 [],
                 [],
                 [],
+                [],
                 _store.GetCacheStatus());
         }
 
@@ -136,6 +137,7 @@ public sealed partial class RouteAnalysisService
                 await QueryStringArrayAsync(connection, "SELECT DISTINCT vervoerder_type FROM stops WHERE vervoerder_type IS NOT NULL ORDER BY vervoerder_type;", cancellationToken),
                 await QueryStringArrayAsync(connection, "SELECT DISTINCT vervoerder FROM stops WHERE vervoerder IS NOT NULL ORDER BY vervoerder;", cancellationToken),
                 await QueryStringArrayAsync(connection, "SELECT DISTINCT wagencode FROM stops WHERE wagencode IS NOT NULL ORDER BY wagencode;", cancellationToken),
+                await QueryStringArrayAsync(connection, "SELECT DISTINCT ze_zone FROM stops WHERE COALESCE(CAST(in_zez AS BOOLEAN), false) AND ze_zone IS NOT NULL AND ze_zone <> '' ORDER BY ze_zone;", cancellationToken),
                 _store.GetCacheStatus());
         });
     }
@@ -152,9 +154,10 @@ public sealed partial class RouteAnalysisService
         return await GetOrCreateAsync(key, async () =>
         {
             using var connection = OpenConnection();
-            var where = BuildWhere(filter);
+            var normalized = NormalizeFilter(filter);
+            var where = BuildWhere(normalized);
             var tripWhere = _store.HasView("daily_trips")
-                ? BuildDailyTripWhere(NormalizeFilter(filter))
+                ? BuildDailyTripWhere(normalized)
                 : null;
             var filteredTripsSql = tripWhere is null
                 ? "SELECT trip_id, wagencode, vervoerder_type, SUM(afstand_km) AS distance_km FROM filtered_stops GROUP BY trip_id, wagencode, vervoerder_type"
@@ -420,7 +423,7 @@ public sealed partial class RouteAnalysisService
         await _store.EnsureReadyAsync(cancellationToken);
         if (!_store.HasStops)
         {
-            return new DashboardResponse([], [], [], "cache_missing", false);
+            return new DashboardResponse([], [], [], [], "cache_missing", false);
         }
 
         var normalized = NormalizeFilter(filter);
@@ -460,6 +463,30 @@ public sealed partial class RouteAnalysisService
                     Math.Round(GetDouble(r, "avg_dwell_min"), 1)),
                 cancellationToken);
 
+            var zeZones = await QueryListAsync(
+                connection,
+                $$"""
+                SELECT
+                    COALESCE(CAST(ze_zone AS VARCHAR), '') AS ze_zone,
+                    COALESCE(CAST(ze_startdatum AS VARCHAR), '') AS ze_startdatum,
+                    COUNT(*) AS stops,
+                    COUNT(DISTINCT trip_id) AS trips,
+                    COUNT(DISTINCT wagencode) AS wagens
+                FROM stops
+                WHERE {{where}}
+                    AND COALESCE(CAST(in_zez AS BOOLEAN), false)
+                GROUP BY 1, 2
+                ORDER BY stops DESC
+                LIMIT 50;
+                """,
+                r => new ZeZoneSummary(
+                    GetString(r, "ze_zone"),
+                    GetString(r, "ze_startdatum"),
+                    GetInt64(r, "stops"),
+                    GetInt64(r, "trips"),
+                    GetInt64(r, "wagens")),
+                cancellationToken);
+
             var roads = await GetRoadMapAsync(normalized, cancellationToken);
             var corridors = roads.Status == "ok"
                 ? BuildLightweightCorridors(roads.Lines)
@@ -469,6 +496,7 @@ public sealed partial class RouteAnalysisService
                 topStops.ToArray(),
                 corridors,
                 roads.Lines.Take(100).ToArray(),
+                zeZones.ToArray(),
                 roads.Status,
                 true);
         });
@@ -528,6 +556,7 @@ public sealed partial class RouteAnalysisService
             RoadThreshold = Math.Clamp(filter.RoadThreshold, 1, 1_000_000),
             RoadTopPercent = Math.Clamp(filter.RoadTopPercent, 1, 25),
             MarkerTopN = Math.Clamp(filter.MarkerTopN, 50, 5_000),
+            ZeZoneMode = NormalizeZeZoneMode(filter.ZeZoneMode),
         };
     }
 
@@ -542,6 +571,7 @@ public sealed partial class RouteAnalysisService
             RoadThreshold = Math.Clamp(request.RoadThreshold, 1, 1_000_000),
             RoadTopPercent = Math.Clamp(request.RoadTopPercent, 1, 25),
             MarkerTopN = Math.Clamp(request.MarkerTopN, 50, 5_000),
+            ZeZoneMode = NormalizeZeZoneMode(request.ZeZoneMode),
             KwhPerKm = Math.Clamp(request.KwhPerKm, 0.5, 3.0),
             CapacityKwh = Math.Clamp(request.CapacityKwh, 100, 1_500),
             StartSocPct = Math.Clamp(request.StartSocPct, 50, 100),
@@ -994,8 +1024,29 @@ public sealed partial class RouteAnalysisService
         AddIn(parts, "vervoerder_type", filter.VervoerderTypes);
         AddIn(parts, "vervoerder", filter.Vervoerders);
         AddVehicleIn(parts, filter.Wagencodes);
+        AddZeZoneFilter(parts, filter.ZeZoneMode);
 
         return string.Join(" AND ", parts);
+    }
+
+    private static void AddZeZoneFilter(List<string> parts, string mode)
+    {
+        if (string.Equals(mode, "in", StringComparison.OrdinalIgnoreCase))
+        {
+            parts.Add("COALESCE(CAST(in_zez AS BOOLEAN), false)");
+        }
+        else if (string.Equals(mode, "out", StringComparison.OrdinalIgnoreCase))
+        {
+            parts.Add("NOT COALESCE(CAST(in_zez AS BOOLEAN), false)");
+        }
+    }
+
+    private static string NormalizeZeZoneMode(string? mode)
+    {
+        return string.Equals(mode, "in", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(mode, "out", StringComparison.OrdinalIgnoreCase)
+                ? mode!.ToLowerInvariant()
+                : "all";
     }
 
     private static string BuildChargerWhere(ChargerFilter filter)

@@ -1,4 +1,8 @@
+using System.Globalization;
+using System.IO.Compression;
+using System.Text;
 using System.Text.Json;
+using System.Xml;
 using DuckDB.NET.Data;
 using LaadinfrastructuurPlanner.Models;
 
@@ -7,6 +11,11 @@ namespace LaadinfrastructuurPlanner.Services;
 public sealed class DuckDbRouteStore
 {
     private static readonly string[] Variants = ["full", "eigen", "charter"];
+    private static readonly string[] ZeZoneSourceCandidates =
+    [
+        "/Users/johnnynijenhuis/Library/CloudStorage/GoogleDrive-info@nijenhuistrucksolutions.nl/Mijn Drive/20260130_143653_pc6_zeroemissionzones.zip",
+        "/Users/johnnynijenhuis/Library/CloudStorage/GoogleDrive-info@nijenhuistrucksolutions.nl/Mijn Drive/Nijenhuis Truck Solutions/Rapportages/ZE-zones/Postcodes/20250428_115243_pc6_zeroemissionzones.xlsx",
+    ];
     private readonly RouteAnalysisOptions _options;
     private readonly SemaphoreSlim _initLock = new(1, 1);
     private volatile bool _initialized;
@@ -61,12 +70,14 @@ public sealed class DuckDbRouteStore
             if (csvFiles.Length > 0)
             {
                 CreateStopsFromCsvs(connection, csvFiles, geocode);
+                CreateZeroEmissionZoneTables(connection);
                 CreateAnalysisTables(connection);
             }
             else if (ResolveStopsParquetPath() is { } stops)
             {
                 Execute(connection, $"CREATE OR REPLACE TABLE stops AS SELECT * FROM read_parquet({SqlString(stops)});");
                 EnsureStopsVehicleColumns(connection);
+                CreateZeroEmissionZoneTables(connection);
                 CreateAnalysisTables(connection);
             }
 
@@ -135,6 +146,7 @@ public sealed class DuckDbRouteStore
             ("geocode_addresses", ResolveAuxiliaryCachePath("geocode_addresses.parquet") ?? Path.Combine(_options.CacheDir, "geocode_addresses.parquet")),
             ("chargers", ResolveAuxiliaryCachePath("hdv_chargers.parquet") ?? Path.Combine(_options.CacheDir, "hdv_chargers.parquet")),
             ("osrm_routes", ResolveAuxiliaryCachePath("osrm_routes_full.parquet") ?? Path.Combine(_options.CacheDir, "osrm_routes_full.parquet")),
+            ("ze_zones", ResolveZeZonesSourcePath() ?? Path.Combine(_options.CacheDir, "zez_pc6.csv")),
             ("duckdb", _options.DuckDbPath),
         };
 
@@ -282,6 +294,43 @@ public sealed class DuckDbRouteStore
         return null;
     }
 
+    private string? ResolveZeZonesSourcePath()
+    {
+        if (!string.IsNullOrWhiteSpace(_options.ZeZonesSourcePath) && File.Exists(_options.ZeZonesSourcePath))
+        {
+            return _options.ZeZonesSourcePath;
+        }
+
+        var localCsv = Path.Combine(_options.CacheDir, "zez_pc6.csv");
+        if (File.Exists(localCsv))
+        {
+            return localCsv;
+        }
+
+        var localXlsx = Path.Combine(_options.CacheDir, "zez_pc6.xlsx");
+        if (File.Exists(localXlsx))
+        {
+            return localXlsx;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_options.ExternalCacheDir))
+        {
+            var externalCsv = Path.Combine(_options.ExternalCacheDir, "zez_pc6.csv");
+            if (File.Exists(externalCsv))
+            {
+                return externalCsv;
+            }
+
+            var externalXlsx = Path.Combine(_options.ExternalCacheDir, "zez_pc6.xlsx");
+            if (File.Exists(externalXlsx))
+            {
+                return externalXlsx;
+            }
+        }
+
+        return ZeZoneSourceCandidates.FirstOrDefault(File.Exists);
+    }
+
     private string BuildManifest()
     {
         var sourcePaths = new List<string>();
@@ -301,6 +350,11 @@ public sealed class DuckDbRouteStore
         }
 
         AddResolvedSource(sourcePaths, "hdv_chargers.parquet");
+        if (ResolveZeZonesSourcePath() is { } zeZones)
+        {
+            sourcePaths.Add(zeZones);
+        }
+
         if (!HasUploadedDataset())
         {
             AddResolvedSource(sourcePaths, "osrm_routes_full.parquet");
@@ -313,7 +367,7 @@ public sealed class DuckDbRouteStore
 
         var payload = new
         {
-            Version = "charging-demand-v6-fixed-depots",
+            Version = "charging-demand-v7-ze-zones",
             Sources = sourcePaths.Select(path =>
             {
                 var info = new FileInfo(path);
@@ -512,6 +566,402 @@ public sealed class DuckDbRouteStore
                 AND lon IS NOT NULL;
             """);
     }
+
+    private void CreateZeroEmissionZoneTables(DuckDBConnection connection)
+    {
+        EnsureStopsZeroEmissionColumns(connection);
+        Execute(connection,
+            """
+            UPDATE stops
+            SET
+                pc6 = regexp_replace(
+                    upper(regexp_extract(COALESCE(CAST(adres AS VARCHAR), ''), '([0-9]{4})\s*([A-Za-z]{2})', 0)),
+                    '\s',
+                    '',
+                    'g'
+                ),
+                ze_zone = '',
+                ze_startdatum = '',
+                in_zez = false;
+            """);
+
+        var source = ResolveZeZonesSourcePath();
+        if (source is null)
+        {
+            return;
+        }
+
+        var zones = LoadZeZoneLookup(source).ToArray();
+        if (zones.Length == 0)
+        {
+            return;
+        }
+
+        var csvPath = Path.Combine(Path.GetDirectoryName(_options.ManifestPath)!, "zez_pc6.csv");
+        Directory.CreateDirectory(Path.GetDirectoryName(csvPath)!);
+        WriteZeZoneCsv(csvPath, zones);
+
+        Execute(connection,
+            $$"""
+            CREATE OR REPLACE TABLE ze_zones AS
+            SELECT
+                upper(trim(CAST(pc6 AS VARCHAR))) AS pc6,
+                trim(CAST(ze_zone AS VARCHAR)) AS ze_zone,
+                trim(CAST(ze_startdatum AS VARCHAR)) AS ze_startdatum
+            FROM read_csv({{SqlString(csvPath)}}, header = true, all_varchar = true)
+            WHERE pc6 IS NOT NULL
+                AND trim(CAST(pc6 AS VARCHAR)) <> '';
+            """);
+
+        Execute(connection,
+            """
+            UPDATE stops
+            SET
+                ze_zone = COALESCE(z.ze_zone, ''),
+                ze_startdatum = COALESCE(z.ze_startdatum, ''),
+                in_zez = z.pc6 IS NOT NULL
+            FROM ze_zones z
+            WHERE stops.pc6 = z.pc6;
+            """);
+    }
+
+    private static IEnumerable<ZeZoneLookupRow> LoadZeZoneLookup(string sourcePath)
+    {
+        var extension = Path.GetExtension(sourcePath);
+        if (extension.Equals(".csv", StringComparison.OrdinalIgnoreCase))
+        {
+            return LoadZeZoneCsv(sourcePath);
+        }
+
+        if (extension.Equals(".zip", StringComparison.OrdinalIgnoreCase))
+        {
+            using var file = File.OpenRead(sourcePath);
+            using var zip = new ZipArchive(file, ZipArchiveMode.Read);
+            var entry = zip.Entries.FirstOrDefault(x => x.FullName.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase));
+            if (entry is null)
+            {
+                return [];
+            }
+
+            using var stream = entry.Open();
+            using var memory = new MemoryStream();
+            stream.CopyTo(memory);
+            memory.Position = 0;
+            return LoadZeZoneXlsx(memory);
+        }
+
+        using var xlsx = File.OpenRead(sourcePath);
+        return LoadZeZoneXlsx(xlsx);
+    }
+
+    private static IEnumerable<ZeZoneLookupRow> LoadZeZoneCsv(string sourcePath)
+    {
+        using var reader = new StreamReader(sourcePath, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        var header = reader.ReadLine();
+        if (header is null)
+        {
+            yield break;
+        }
+
+        var headers = SplitCsvLine(header).Select(NormalizeHeader).ToArray();
+        var pc6Index = Array.IndexOf(headers, "pc6");
+        var zoneIndex = Array.IndexOf(headers, "ze_zone");
+        var startIndex = Array.IndexOf(headers, "ze_startdatum");
+        var inZoneIndex = Array.IndexOf(headers, "in_zero_emissie_zone");
+        if (pc6Index < 0 || zoneIndex < 0)
+        {
+            yield break;
+        }
+
+        string? line;
+        while ((line = reader.ReadLine()) is not null)
+        {
+            var cells = SplitCsvLine(line);
+            if (inZoneIndex >= 0 && !string.Equals(Cell(cells, inZoneIndex), "ja", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var pc6 = NormalizePc6(Cell(cells, pc6Index));
+            var zone = Cell(cells, zoneIndex).Trim();
+            if (pc6.Length == 0 || zone.Length == 0)
+            {
+                continue;
+            }
+
+            yield return new ZeZoneLookupRow(pc6, zone, startIndex >= 0 ? Cell(cells, startIndex).Trim() : "");
+        }
+    }
+
+    private static IEnumerable<ZeZoneLookupRow> LoadZeZoneXlsx(Stream source)
+    {
+        using var archive = new ZipArchive(source, ZipArchiveMode.Read, leaveOpen: true);
+        var sharedStrings = ReadSharedStrings(archive);
+        var sheetPath = ResolveWorksheetPath(archive, "overlap_pc6_ze_zones");
+        if (sheetPath is null)
+        {
+            return [];
+        }
+
+        var rows = ReadWorksheetRows(archive, sheetPath, sharedStrings).ToArray();
+        if (rows.Length == 0)
+        {
+            return [];
+        }
+
+        var headers = rows[0].Select(NormalizeHeader).ToArray();
+        var pc6Index = Array.IndexOf(headers, "pc6");
+        var zoneIndex = Array.IndexOf(headers, "ze_zone");
+        var startIndex = Array.IndexOf(headers, "ze_startdatum");
+        var inZoneIndex = Array.IndexOf(headers, "in_zero_emissie_zone");
+        if (pc6Index < 0 || zoneIndex < 0 || inZoneIndex < 0)
+        {
+            return [];
+        }
+
+        return rows
+            .Skip(1)
+            .Where(row => string.Equals(Cell(row, inZoneIndex), "ja", StringComparison.OrdinalIgnoreCase))
+            .Select(row => new ZeZoneLookupRow(
+                NormalizePc6(Cell(row, pc6Index)),
+                Cell(row, zoneIndex).Trim(),
+                startIndex >= 0 ? Cell(row, startIndex).Trim() : ""))
+            .Where(row => row.Pc6.Length > 0 && row.Zone.Length > 0)
+            .GroupBy(row => row.Pc6, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First());
+    }
+
+    private static string[] ReadSharedStrings(ZipArchive archive)
+    {
+        var entry = archive.GetEntry("xl/sharedStrings.xml");
+        if (entry is null)
+        {
+            return [];
+        }
+
+        var values = new List<string>();
+        using var stream = entry.Open();
+        using var reader = XmlReader.Create(stream, new XmlReaderSettings { IgnoreWhitespace = false });
+        var text = new StringBuilder();
+        while (reader.Read())
+        {
+            if (reader.NodeType == XmlNodeType.Element && reader.LocalName == "si")
+            {
+                text.Clear();
+            }
+            else if (reader.NodeType == XmlNodeType.Text)
+            {
+                text.Append(reader.Value);
+            }
+            else if (reader.NodeType == XmlNodeType.EndElement && reader.LocalName == "si")
+            {
+                values.Add(text.ToString());
+            }
+        }
+
+        return values.ToArray();
+    }
+
+    private static string? ResolveWorksheetPath(ZipArchive archive, string sheetName)
+    {
+        var workbook = archive.GetEntry("xl/workbook.xml");
+        var rels = archive.GetEntry("xl/_rels/workbook.xml.rels");
+        if (workbook is null || rels is null)
+        {
+            return null;
+        }
+
+        string? relationId = null;
+        using (var stream = workbook.Open())
+        using (var reader = XmlReader.Create(stream))
+        {
+            while (reader.Read())
+            {
+                if (reader.NodeType == XmlNodeType.Element
+                    && reader.LocalName == "sheet"
+                    && string.Equals(reader.GetAttribute("name"), sheetName, StringComparison.OrdinalIgnoreCase))
+                {
+                    relationId = reader.GetAttribute("id", "http://schemas.openxmlformats.org/officeDocument/2006/relationships");
+                    break;
+                }
+            }
+        }
+
+        if (relationId is null)
+        {
+            return null;
+        }
+
+        using var relStream = rels.Open();
+        using var relReader = XmlReader.Create(relStream);
+        while (relReader.Read())
+        {
+            if (relReader.NodeType == XmlNodeType.Element
+                && relReader.LocalName == "Relationship"
+                && string.Equals(relReader.GetAttribute("Id"), relationId, StringComparison.Ordinal))
+            {
+                var target = relReader.GetAttribute("Target");
+                if (string.IsNullOrWhiteSpace(target))
+                {
+                    return null;
+                }
+
+                return target.StartsWith("worksheets/", StringComparison.OrdinalIgnoreCase)
+                    ? "xl/" + target
+                    : target.TrimStart('/');
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string[]> ReadWorksheetRows(ZipArchive archive, string sheetPath, IReadOnlyList<string> sharedStrings)
+    {
+        var entry = archive.GetEntry(sheetPath);
+        if (entry is null)
+        {
+            yield break;
+        }
+
+        using var stream = entry.Open();
+        using var reader = XmlReader.Create(stream, new XmlReaderSettings { IgnoreWhitespace = true });
+        var row = new Dictionary<int, string>();
+        string? cellRef = null;
+        string? cellType = null;
+        while (reader.Read())
+        {
+            if (reader.NodeType == XmlNodeType.Element && reader.LocalName == "row")
+            {
+                row.Clear();
+            }
+            else if (reader.NodeType == XmlNodeType.Element && reader.LocalName == "c")
+            {
+                cellRef = reader.GetAttribute("r");
+                cellType = reader.GetAttribute("t");
+            }
+            else if (reader.NodeType == XmlNodeType.Element && (reader.LocalName == "v" || reader.LocalName == "t"))
+            {
+                var rawValue = reader.ReadElementContentAsString();
+                var column = ColumnIndex(cellRef);
+                if (column >= 0)
+                {
+                    row[column] = cellType == "s"
+                        && int.TryParse(rawValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var sharedIndex)
+                        && sharedIndex >= 0
+                        && sharedIndex < sharedStrings.Count
+                            ? sharedStrings[sharedIndex]
+                            : rawValue;
+                }
+            }
+            else if (reader.NodeType == XmlNodeType.EndElement && reader.LocalName == "row")
+            {
+                var width = row.Count == 0 ? 0 : row.Keys.Max() + 1;
+                var cells = new string[width];
+                foreach (var item in row)
+                {
+                    cells[item.Key] = item.Value;
+                }
+
+                yield return cells;
+            }
+        }
+    }
+
+    private static int ColumnIndex(string? cellReference)
+    {
+        if (string.IsNullOrWhiteSpace(cellReference))
+        {
+            return -1;
+        }
+
+        var index = 0;
+        var seenLetter = false;
+        foreach (var ch in cellReference)
+        {
+            if (!char.IsLetter(ch))
+            {
+                break;
+            }
+
+            seenLetter = true;
+            index = index * 26 + (char.ToUpperInvariant(ch) - 'A' + 1);
+        }
+
+        return seenLetter ? index - 1 : -1;
+    }
+
+    private static void WriteZeZoneCsv(string path, IReadOnlyList<ZeZoneLookupRow> zones)
+    {
+        using var writer = new StreamWriter(path, false, new UTF8Encoding(false));
+        writer.WriteLine("pc6,ze_zone,ze_startdatum");
+        foreach (var zone in zones)
+        {
+            writer.Write(EscapeCsv(zone.Pc6));
+            writer.Write(',');
+            writer.Write(EscapeCsv(zone.Zone));
+            writer.Write(',');
+            writer.WriteLine(EscapeCsv(zone.StartDate));
+        }
+    }
+
+    private static string EscapeCsv(string value)
+    {
+        return value.Contains('"', StringComparison.Ordinal) || value.Contains(',', StringComparison.Ordinal) || value.Contains('\n', StringComparison.Ordinal)
+            ? "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\""
+            : value;
+    }
+
+    private static string[] SplitCsvLine(string line)
+    {
+        var cells = new List<string>();
+        var cell = new StringBuilder();
+        var quoted = false;
+        for (var i = 0; i < line.Length; i++)
+        {
+            var ch = line[i];
+            if (ch == '"')
+            {
+                if (quoted && i + 1 < line.Length && line[i + 1] == '"')
+                {
+                    cell.Append('"');
+                    i++;
+                }
+                else
+                {
+                    quoted = !quoted;
+                }
+            }
+            else if (ch == ',' && !quoted)
+            {
+                cells.Add(cell.ToString());
+                cell.Clear();
+            }
+            else
+            {
+                cell.Append(ch);
+            }
+        }
+
+        cells.Add(cell.ToString());
+        return cells.ToArray();
+    }
+
+    private static string Cell(IReadOnlyList<string> cells, int index)
+    {
+        return index >= 0 && index < cells.Count ? cells[index] : "";
+    }
+
+    private static string NormalizePc6(string value)
+    {
+        return new string(value.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
+    }
+
+    private static string NormalizeHeader(string value)
+    {
+        return value.Trim().ToLowerInvariant().Replace(" ", "_", StringComparison.Ordinal);
+    }
+
+    private sealed record ZeZoneLookupRow(string Pc6, string Zone, string StartDate);
 
     private static void CreateAnalysisTables(DuckDBConnection connection)
     {
@@ -754,6 +1204,29 @@ public sealed class DuckDbRouteStore
         if (!HasColumn(connection, "stops", "kenteken_norm"))
         {
             Execute(connection, "ALTER TABLE stops ADD COLUMN kenteken_norm VARCHAR DEFAULT '';");
+        }
+    }
+
+    private static void EnsureStopsZeroEmissionColumns(DuckDBConnection connection)
+    {
+        if (!HasColumn(connection, "stops", "pc6"))
+        {
+            Execute(connection, "ALTER TABLE stops ADD COLUMN pc6 VARCHAR DEFAULT '';");
+        }
+
+        if (!HasColumn(connection, "stops", "ze_zone"))
+        {
+            Execute(connection, "ALTER TABLE stops ADD COLUMN ze_zone VARCHAR DEFAULT '';");
+        }
+
+        if (!HasColumn(connection, "stops", "ze_startdatum"))
+        {
+            Execute(connection, "ALTER TABLE stops ADD COLUMN ze_startdatum VARCHAR DEFAULT '';");
+        }
+
+        if (!HasColumn(connection, "stops", "in_zez"))
+        {
+            Execute(connection, "ALTER TABLE stops ADD COLUMN in_zez BOOLEAN DEFAULT false;");
         }
     }
 

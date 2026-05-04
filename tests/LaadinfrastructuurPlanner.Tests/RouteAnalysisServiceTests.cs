@@ -15,6 +15,10 @@ public sealed class RouteAnalysisServiceTests : IDisposable
     {
         var cacheDir = Path.Combine(_root, ".cache");
         TestParquetData.WriteAll(cacheDir);
+        var zeZonesPath = Path.Combine(cacheDir, "zez_pc6.csv");
+        File.WriteAllText(
+            zeZonesPath,
+            "pc6,ze_zone,ze_startdatum\n1234AB,Test ZE-zone,2025-01-01\n");
 
         var options = new RouteAnalysisOptions
         {
@@ -23,6 +27,7 @@ public sealed class RouteAnalysisServiceTests : IDisposable
             UploadedDatasetDir = Path.Combine(cacheDir, "uploaded-dataset", "active"),
             DuckDbPath = Path.Combine(cacheDir, "planner", "route-analysis.duckdb"),
             ManifestPath = Path.Combine(cacheDir, "planner", "manifest.json"),
+            ZeZonesSourcePath = zeZonesPath,
         };
         var store = new DuckDbRouteStore(options);
         _service = new RouteAnalysisService(store, new MemoryCache(new MemoryCacheOptions()));
@@ -42,6 +47,7 @@ public sealed class RouteAnalysisServiceTests : IDisposable
         Assert.Equal(new DateOnly(2026, 1, 2), metadata.MaxDate);
         Assert.Contains("eigen", metadata.VervoerderTypes);
         Assert.Contains("charter", metadata.VervoerderTypes);
+        Assert.Contains("Test ZE-zone", metadata.ZeZones);
 
         var eigen = await _service.GetSummaryAsync(new AnalysisFilter { VervoerderTypes = ["eigen"] });
         Assert.Equal(6, eigen.Stops);
@@ -52,6 +58,27 @@ public sealed class RouteAnalysisServiceTests : IDisposable
         Assert.Equal(5, dateFiltered.Stops);
         Assert.Equal(2, dateFiltered.Trips);
         Assert.Equal(380, dateFiltered.TotalKm);
+    }
+
+    [Fact]
+    public async Task ZeroEmissionZoneFilterUsesPc6Lookup()
+    {
+        var inZone = await _service.GetSummaryAsync(new AnalysisFilter { ZeZoneMode = "in" });
+
+        Assert.Equal(4, inZone.Stops);
+        Assert.Equal(2, inZone.Trips);
+        Assert.Equal(1, inZone.Wagens);
+
+        var outsideZone = await _service.GetSummaryAsync(new AnalysisFilter { ZeZoneMode = "out" });
+
+        Assert.Equal(4, outsideZone.Stops);
+        Assert.Equal(3, outsideZone.Trips);
+
+        var dashboard = await _service.GetDashboardAsync(new AnalysisFilter { ZeZoneMode = "in" });
+        var zone = Assert.Single(dashboard.ZeZones);
+        Assert.Equal("Test ZE-zone", zone.Zone);
+        Assert.Equal("2025-01-01", zone.StartDate);
+        Assert.Equal(4, zone.Stops);
     }
 
     [Fact]

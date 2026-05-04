@@ -11,6 +11,7 @@ public record AnalysisFilter
     public int RoadThreshold { get; init; } = 100;
     public int RoadTopPercent { get; init; } = 1;
     public int MarkerTopN { get; init; } = 250;
+    public string ZeZoneMode { get; init; } = "all";
 }
 
 public sealed record SimulationRequest : AnalysisFilter
@@ -46,6 +47,7 @@ public sealed record MetadataResponse(
     string[] VervoerderTypes,
     string[] Vervoerders,
     string[] Wagencodes,
+    string[] ZeZones,
     CacheFileStatus[] CacheFiles);
 
 public sealed record DatasetUploadResult(
@@ -313,10 +315,18 @@ public sealed record DashboardCorridor(
     double SpreadKm,
     int RoadSegments);
 
+public sealed record ZeZoneSummary(
+    string Zone,
+    string StartDate,
+    long Stops,
+    long Trips,
+    long Wagens);
+
 public sealed record DashboardResponse(
     DashboardStop[] TopStops,
     DashboardCorridor[] Corridors,
     RoadLine[] TopRoadSegments,
+    ZeZoneSummary[] ZeZones,
     string RoadStatus,
     bool FromCache);
 

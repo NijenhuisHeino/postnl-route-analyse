@@ -46,6 +46,14 @@
                 <input type="number" min="0" max="180" step="5" @bind="MinDwellMin" />
             </label>
             <label>
+                ZE-zones
+                <select @bind="ZeZoneMode">
+                    <option value="all">Alle ritten en stops</option>
+                    <option value="in">Alleen in ZE-zone</option>
+                    <option value="out">Alleen buiten ZE-zone</option>
+                </select>
+            </label>
+            <label>
                 Min. passages per wegvlak
                 <input type="number" min="1" max="1000000" step="50" @bind="RoadThreshold" />
                 <input class="range-control" type="range" min="1" max="5000" step="25" @bind="RoadThreshold" @bind:event="oninput" />
@@ -168,6 +176,48 @@
             <div class="metric"><span>Totale km</span><strong>@FormatNumber(Summary?.TotalKm)</strong></div>
             <div class="metric"><span>Stopduur (uur)</span><strong>@FormatNumber(Summary?.TotalDwellHours)</strong></div>
         </section>
+
+        @if (Dashboard?.ZeZones.Length > 0)
+        {
+            <section class="table-panel ze-panel">
+                <div class="panel-heading">
+                    <h3>Zero-emissiezones</h3>
+                    <span>@Dashboard.ZeZones.Length zones in selectie</span>
+                </div>
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Zone</th>
+                                <th>Startdatum</th>
+                                <th>Stops</th>
+                                <th>Ritten</th>
+                                <th>Voertuigen</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var zone in Dashboard.ZeZones.Take(12))
+                            {
+                                <tr>
+                                    <td><strong>@zone.Zone</strong></td>
+                                    <td>@zone.StartDate</td>
+                                    <td>@zone.Stops.ToString("N0")</td>
+                                    <td>@zone.Trips.ToString("N0")</td>
+                                    <td>@zone.Wagens.ToString("N0")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        }
+        else if (Metadata?.ZeZones.Length > 0 && ZeZoneMode == "in")
+        {
+            <section class="empty-state compact-empty">
+                <h3>Geen stops in zero-emissiezone</h3>
+                <p>Er zijn geen ZE-zone stops binnen de huidige filters.</p>
+            </section>
+        }
 
         <section class="map-panel">
             <div class="panel-heading">
@@ -525,6 +575,7 @@
     private double MinDwellMin { get; set; }
     private int RoadThreshold { get; set; } = 100;
     private int RoadTopPercent { get; set; } = 1;
+    private string ZeZoneMode { get; set; } = "all";
     private bool ShowStopHeat { get; set; } = true;
     private bool ShowMarkers { get; set; } = true;
     private bool ShowRoads { get; set; }
@@ -638,7 +689,8 @@
                 MinDwellMin = filter.MinDwellMin,
                 RoadThreshold = filter.RoadThreshold,
                 RoadTopPercent = filter.RoadTopPercent,
-                MarkerTopN = filter.MarkerTopN
+                MarkerTopN = filter.MarkerTopN,
+                ZeZoneMode = filter.ZeZoneMode,
             });
         }
         finally
@@ -682,7 +734,8 @@
             MinDwellMin = MinDwellMin,
             RoadThreshold = RoadThreshold,
             RoadTopPercent = RoadTopPercent,
-            MarkerTopN = 250
+            MarkerTopN = 250,
+            ZeZoneMode = ZeZoneMode,
         };
     }
 
@@ -725,6 +778,7 @@
             RoadThreshold = filter.RoadThreshold,
             RoadTopPercent = filter.RoadTopPercent,
             MarkerTopN = 100,
+            ZeZoneMode = filter.ZeZoneMode,
             MinVehicles = MinDepotVehicles,
             Scenario = BuildScenario()
         };
@@ -810,6 +864,7 @@
                     RoadThreshold = filter.RoadThreshold,
                     RoadTopPercent = filter.RoadTopPercent,
                     MarkerTopN = filter.MarkerTopN,
+                    ZeZoneMode = filter.ZeZoneMode,
                     DepotId = SelectedDepotId,
                     Scenario = BuildScenario()
                 });
@@ -833,6 +888,7 @@
                     RoadThreshold = filter.RoadThreshold,
                     RoadTopPercent = filter.RoadTopPercent,
                     MarkerTopN = filter.MarkerTopN,
+                    ZeZoneMode = filter.ZeZoneMode,
                     Scenario = BuildScenario()
                 });
             }
@@ -848,6 +904,7 @@
                     RoadThreshold = filter.RoadThreshold,
                     RoadTopPercent = filter.RoadTopPercent,
                     MarkerTopN = filter.MarkerTopN,
+                    ZeZoneMode = filter.ZeZoneMode,
                     Road = SelectedRoad,
                     Scenario = BuildScenario()
                 });

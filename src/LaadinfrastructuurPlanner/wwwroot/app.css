@@ -143,7 +143,8 @@ td span,
   gap: 10px;
 }
 
-.filter-grid input {
+.filter-grid input,
+.filter-grid select {
   width: 100%;
   min-height: 38px;
   padding: 8px 10px;
@@ -171,7 +172,8 @@ td span,
   font-weight: 700;
 }
 
-.filter-grid input:focus {
+.filter-grid input:focus,
+.filter-grid select:focus {
   border-color: var(--eta-yellow);
   box-shadow: 0 0 0 3px var(--eta-focus);
   outline: none;
@@ -390,6 +392,11 @@ td span,
   max-width: 760px;
   margin: 8px 0 0;
   line-height: 1.5;
+}
+
+.compact-empty,
+.ze-panel {
+  margin-bottom: 16px;
 }
 
 .metric-row {
