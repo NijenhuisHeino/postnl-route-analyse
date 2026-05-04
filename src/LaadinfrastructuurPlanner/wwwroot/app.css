@@ -155,6 +155,22 @@ td span,
   box-shadow: 0 1px 0 rgba(29, 24, 43, 0.02);
 }
 
+.filter-grid input[type="range"] {
+  min-height: 18px;
+  padding: 0;
+  accent-color: var(--eta-purple);
+}
+
+.range-control {
+  margin-top: -2px;
+}
+
+.range-value {
+  color: var(--eta-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .filter-grid input:focus {
   border-color: var(--eta-yellow);
   box-shadow: 0 0 0 3px var(--eta-focus);

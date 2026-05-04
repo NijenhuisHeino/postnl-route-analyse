@@ -434,6 +434,8 @@ window.routePlannerMap = (() => {
         }
 
         const notes = [];
+        if (options.showRoads && roads.status === "ok") notes.push(`${roads.lines?.length || 0} wegvlakken`);
+        if (options.showRoadHeat && roads.status === "ok") notes.push(`${roads.heatPoints?.length || 0} wegdruktepunten`);
         if (options.showChargers && chargers.status === "ok") notes.push(`${chargers.markers?.length || 0} laders`);
         if (options.showOvernight && overnight.status === "ok") notes.push(`${overnight.locations?.length || 0} vaste stilstandlocaties`);
         if (roads.status === "cache_missing") notes.push("weglaag niet beschikbaar");
