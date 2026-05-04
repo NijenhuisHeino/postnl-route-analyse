@@ -253,6 +253,19 @@ public sealed record HourlyDemandCell(
     double RequiredKw,
     double RequiredMw);
 
+public sealed record WeeklyDemandCell(
+    int DayIndex,
+    string DayLabel,
+    int Hour,
+    string Label,
+    long Vehicles,
+    long Events,
+    double DemandKwh,
+    double RequiredKw,
+    double RequiredMw,
+    string[] Kentekens,
+    string[] Wagencodes);
+
 public sealed record ChargingProfile(
     long Events,
     double TotalMwh,
@@ -261,6 +274,7 @@ public sealed record ChargingProfile(
     int RequiredPlugsAtPeak,
     ChargingWindow[] BusyWindows,
     HourlyDemandCell[] HourlyProfile,
+    WeeklyDemandCell[] WeeklyProfile,
     string Recommendation);
 
 public sealed record SelectionDetailResponse(

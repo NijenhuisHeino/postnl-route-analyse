@@ -167,7 +167,9 @@ public sealed class RouteAnalysisServiceTests : IDisposable
         Assert.NotEmpty(detail.HeatPoints);
         Assert.NotEmpty(detail.Charging.BusyWindows);
         Assert.Equal(24, detail.Charging.HourlyProfile.Length);
+        Assert.Equal(168, detail.Charging.WeeklyProfile.Length);
         Assert.Contains(detail.Charging.HourlyProfile, hour => hour.Hour == 18 && hour.Vehicles == 1 && hour.RequiredKw == 15);
+        Assert.Contains(detail.Charging.WeeklyProfile, cell => cell.DayLabel == "Donderdag" && cell.Hour == 18 && cell.Vehicles == 1 && cell.RequiredKw == 15 && cell.Wagencodes.Contains("W1"));
         var vehicle = Assert.Single(detail.Vehicles);
         Assert.Equal(1, vehicle.Days);
         Assert.Equal(180, vehicle.AvgDayKm);

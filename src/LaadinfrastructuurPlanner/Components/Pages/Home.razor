@@ -291,25 +291,42 @@
 
                 @if (SelectedDetail.SelectionType == "depot")
                 {
-                    var selectedHour = SelectedHourCell();
-                    <div class="analysis-card hourly-card">
+                    var selectedDemand = SelectedWeeklyDemandCell();
+                    <div class="analysis-card weekly-demand-card">
                         <div class="card-heading">
-                            <strong>24-uurs bezetting en laadvraag</strong>
-                            <span>@(selectedHour is null ? "Geen stilstandvensters" : $"{selectedHour.Label} · {selectedHour.Vehicles:N0} voertuigen · {selectedHour.RequiredKw:N0} kW")</span>
+                            <strong>Weekprofiel vermogensvraag</strong>
+                            <span>@(selectedDemand is null ? "Geen stilstandvensters" : $"{selectedDemand.Label} · {selectedDemand.Vehicles:N0} voertuigen · {selectedDemand.RequiredKw:N0} kW")</span>
                         </div>
-                        <div class="hour-heatmap" aria-label="Uurprofiel laadvraag">
-                            @foreach (var hour in SelectedDetail.Charging.HourlyProfile)
+                        <div class="week-demand-heatmap" aria-label="Weekprofiel vermogensvraag">
+                            <div class="week-grid-corner"></div>
+                            @foreach (var hour in Enumerable.Range(0, 24))
                             {
-                                <button class="@HourCellClass(hour)"
-                                        style="@HourCellStyle(hour)"
-                                        title="@($"{hour.Label}: {hour.Vehicles:N0} voertuigen, {hour.RequiredKw:N0} kW gevraagd")"
-                                        @onclick="() => SelectDemandHour(hour.Hour)">
-                                    <span>@hour.Label</span>
-                                    <strong>@hour.Vehicles</strong>
-                                    <em>@hour.RequiredKw.ToString("N0") kW</em>
-                                </button>
+                                <span class="week-hour-label">@($"{hour:00}")</span>
+                            }
+                            @foreach (var dayGroup in SelectedDetail.Charging.WeeklyProfile.GroupBy(x => new { x.DayIndex, x.DayLabel }).OrderBy(x => x.Key.DayIndex))
+                            {
+                                <strong class="week-day-label">@ShortDayLabel(dayGroup.Key.DayLabel)</strong>
+                                @foreach (var cell in dayGroup.OrderBy(x => x.Hour))
+                                {
+                                    <button class="@WeekCellClass(cell)"
+                                            style="@WeekCellStyle(cell)"
+                                            title="@($"{cell.Label}: {cell.Vehicles:N0} voertuigen, {cell.RequiredKw:N0} kW gevraagd")"
+                                            @onclick="() => SelectDemandBlock(cell.DayIndex, cell.Hour)">
+                                        <span>@cell.RequiredKw.ToString("N0")</span>
+                                    </button>
+                                }
                             }
                         </div>
+                        @if (selectedDemand is not null)
+                        {
+                            <div class="week-demand-detail">
+                                <strong>@selectedDemand.Label</strong>
+                                <span>@selectedDemand.RequiredKw.ToString("N0") kW gevraagd (@selectedDemand.RequiredMw.ToString("N2") MW)</span>
+                                <span>@selectedDemand.Vehicles.ToString("N0") voertuigen aanwezig</span>
+                                <span>Kentekens: @JoinValues(selectedDemand.Kentekens, "geen kentekens bekend")</span>
+                                <span>Voertuigcodes: @JoinValues(selectedDemand.Wagencodes, "geen voertuigcodes bekend")</span>
+                            </div>
+                        }
                     </div>
                 }
 
@@ -485,6 +502,7 @@
     private string? SelectedDepotId { get; set; }
     private RoadSelection? SelectedRoad { get; set; }
     private StopLocationDetailRequest? SelectedStopLocation { get; set; }
+    private int? SelectedDemandDay { get; set; }
     private int? SelectedDemandHour { get; set; }
 
     private string TransportMode { get; set; } = "Alles";
@@ -556,6 +574,7 @@
         SelectedDepotId = null;
         SelectedRoad = null;
         SelectedStopLocation = null;
+        SelectedDemandDay = null;
         SelectedDemandHour = null;
         await ClearSelectionHeatAsync();
 
@@ -718,6 +737,7 @@
         SelectedDepotId = depotId;
         SelectedRoad = null;
         SelectedStopLocation = null;
+        SelectedDemandDay = null;
         SelectedDemandHour = null;
         await RefreshSelectedDetailAsync();
         StateHasChanged();
@@ -735,6 +755,7 @@
         };
         SelectedDepotId = null;
         SelectedRoad = null;
+        SelectedDemandDay = null;
         SelectedDemandHour = null;
         await RefreshSelectedDetailAsync();
         StateHasChanged();
@@ -746,6 +767,7 @@
         SelectedRoad = new RoadSelection(lat1, lon1, lat2, lon2, radiusKm);
         SelectedDepotId = null;
         SelectedStopLocation = null;
+        SelectedDemandDay = null;
         SelectedDemandHour = null;
         await RefreshSelectedDetailAsync();
         StateHasChanged();
@@ -778,11 +800,13 @@
                     DepotId = SelectedDepotId,
                     Scenario = BuildScenario()
                 });
-                SelectedDemandHour ??= SelectedDetail.Charging.HourlyProfile
+                var peakDemand = SelectedDetail.Charging.WeeklyProfile
                     .OrderByDescending(x => x.RequiredKw)
                     .ThenByDescending(x => x.Vehicles)
                     .FirstOrDefault(x => x.RequiredKw > 0 || x.Vehicles > 0)
-                    ?.Hour;
+                    ?? SelectedDetail.Charging.WeeklyProfile.FirstOrDefault();
+                SelectedDemandDay ??= peakDemand?.DayIndex;
+                SelectedDemandHour ??= peakDemand?.Hour;
             }
             else if (SelectedStopLocation is not null)
             {
@@ -856,40 +880,72 @@
         }
     }
 
-    private void SelectDemandHour(int hour)
+    private void SelectDemandBlock(int dayIndex, int hour)
     {
+        SelectedDemandDay = dayIndex;
         SelectedDemandHour = hour;
     }
 
-    private HourlyDemandCell? SelectedHourCell()
+    private WeeklyDemandCell? SelectedWeeklyDemandCell()
     {
-        if (SelectedDetail is null || SelectedDetail.Charging.HourlyProfile.Length == 0)
+        if (SelectedDetail is null || SelectedDetail.Charging.WeeklyProfile.Length == 0)
         {
             return null;
         }
 
-        var hour = SelectedDemandHour ?? SelectedDetail.Charging.HourlyProfile
+        var peak = SelectedDetail.Charging.WeeklyProfile
             .OrderByDescending(x => x.RequiredKw)
             .ThenByDescending(x => x.Vehicles)
-            .FirstOrDefault()
-            ?.Hour;
+            .FirstOrDefault(x => x.RequiredKw > 0 || x.Vehicles > 0)
+            ?? SelectedDetail.Charging.WeeklyProfile.FirstOrDefault();
+        var day = SelectedDemandDay ?? peak?.DayIndex;
+        var hour = SelectedDemandHour ?? peak?.Hour;
 
-        return hour is null
+        return day is null || hour is null
             ? null
-            : SelectedDetail.Charging.HourlyProfile.FirstOrDefault(x => x.Hour == hour.Value);
+            : SelectedDetail.Charging.WeeklyProfile.FirstOrDefault(x => x.DayIndex == day.Value && x.Hour == hour.Value);
     }
 
-    private string HourCellClass(HourlyDemandCell hour)
+    private string WeekCellClass(WeeklyDemandCell cell)
     {
-        return SelectedDemandHour == hour.Hour ? "hour-cell active" : "hour-cell";
+        return SelectedDemandDay == cell.DayIndex && SelectedDemandHour == cell.Hour ? "week-cell active" : "week-cell";
     }
 
-    private string HourCellStyle(HourlyDemandCell hour)
+    private string WeekCellStyle(WeeklyDemandCell cell)
     {
-        var max = SelectedDetail?.Charging.HourlyProfile.Max(x => x.RequiredKw) ?? 0;
-        var intensity = max <= 0 ? 0 : Math.Clamp(hour.RequiredKw / max, 0, 1);
+        var max = SelectedDetail?.Charging.WeeklyProfile.Max(x => x.RequiredKw) ?? 0;
+        var intensity = max <= 0 ? 0 : Math.Clamp(cell.RequiredKw / max, 0, 1);
         var alpha = 0.12 + 0.78 * intensity;
         return $"--hour-alpha:{alpha.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}";
+    }
+
+    private static string ShortDayLabel(string dayLabel)
+    {
+        return dayLabel switch
+        {
+            "Maandag" => "Ma",
+            "Dinsdag" => "Di",
+            "Woensdag" => "Wo",
+            "Donderdag" => "Do",
+            "Vrijdag" => "Vr",
+            "Zaterdag" => "Za",
+            "Zondag" => "Zo",
+            _ => dayLabel
+        };
+    }
+
+    private static string JoinValues(IReadOnlyCollection<string> values, string empty)
+    {
+        if (values.Count == 0)
+        {
+            return empty;
+        }
+
+        const int maxVisible = 12;
+        var visible = values.Take(maxVisible).ToArray();
+        return values.Count <= maxVisible
+            ? string.Join(", ", visible)
+            : string.Join(", ", visible) + $" +{values.Count - maxVisible}";
     }
 
     private static string RoadStatusLabel(string? status)

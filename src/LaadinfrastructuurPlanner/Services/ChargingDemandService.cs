@@ -511,9 +511,10 @@ public sealed partial class RouteAnalysisService
             .ToArray();
 
         var hourlyProfile = BuildHourlyProfile(eventLoads);
+        var weeklyProfile = BuildWeeklyProfile(eventLoads);
         var totalMwh = eventLoads.Sum(x => x.DemandKwh) / 1000.0;
         var shortageMwh = eventLoads.Sum(x => x.ShortageKwh) / 1000.0;
-        var peakMw = hourlyProfile.Length == 0 ? 0 : hourlyProfile.Max(x => x.RequiredMw);
+        var peakMw = weeklyProfile.Length == 0 ? 0 : weeklyProfile.Max(x => x.RequiredMw);
         var plugsAtPeak = scenario.KwPerPlug <= 0 ? 0 : (int)Math.Ceiling(peakMw * 1000.0 / scenario.KwPerPlug);
 
         return new ChargingProfile(
@@ -524,6 +525,7 @@ public sealed partial class RouteAnalysisService
             plugsAtPeak,
             windows,
             hourlyProfile,
+            weeklyProfile,
             Recommend(totalMwh, shortageMwh, isRoadSelection));
     }
 
@@ -615,6 +617,93 @@ public sealed partial class RouteAnalysisService
                     Math.Round(requiredKw, 0),
                     Math.Round(requiredKw / 1000.0, 2));
             })
+            .ToArray();
+    }
+
+    private static WeeklyDemandCell[] BuildWeeklyProfile(IReadOnlyList<DemandEventLoad> eventLoads)
+    {
+        var slots = new Dictionary<DateTime, HourAccumulator>();
+        foreach (var load in eventLoads)
+        {
+            if (load.Row.StartTime == DateTime.MinValue || load.Row.EndTime == DateTime.MinValue || load.Row.EndTime <= load.Row.StartTime)
+            {
+                continue;
+            }
+
+            var cursor = new DateTime(load.Row.StartTime.Year, load.Row.StartTime.Month, load.Row.StartTime.Day, load.Row.StartTime.Hour, 0, 0);
+            while (cursor < load.Row.EndTime)
+            {
+                var next = cursor.AddHours(1);
+                var overlapStart = load.Row.StartTime > cursor ? load.Row.StartTime : cursor;
+                var overlapEnd = load.Row.EndTime < next ? load.Row.EndTime : next;
+                var overlapHours = Math.Max(0, (overlapEnd - overlapStart).TotalHours);
+                if (overlapHours > 0)
+                {
+                    if (!slots.TryGetValue(cursor, out var accumulator))
+                    {
+                        accumulator = new HourAccumulator();
+                        slots[cursor] = accumulator;
+                    }
+
+                    accumulator.VehicleKeys.Add(VehicleGroupKey(load.Row));
+                    accumulator.Events++;
+                    accumulator.DemandKwh += load.RequiredKw * overlapHours;
+                    accumulator.RequiredKw += load.RequiredKw;
+                    foreach (var plate in SplitLicensePlates(load.Row.Kentekens))
+                    {
+                        accumulator.Kentekens.Add(plate);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(load.Row.Wagencode))
+                    {
+                        accumulator.Wagencodes.Add(load.Row.Wagencode);
+                    }
+                }
+
+                cursor = next;
+            }
+        }
+
+        var peakPerWeekHour = slots
+            .Select(slot => new
+            {
+                DayIndex = WeekDayIndex(slot.Key.DayOfWeek),
+                Hour = slot.Key.Hour,
+                Vehicles = slot.Value.VehicleKeys.LongCount(),
+                slot.Value.Events,
+                slot.Value.DemandKwh,
+                slot.Value.RequiredKw,
+                Kentekens = slot.Value.Kentekens.Order(StringComparer.OrdinalIgnoreCase).Take(40).ToArray(),
+                Wagencodes = slot.Value.Wagencodes.Order(StringComparer.OrdinalIgnoreCase).Take(40).ToArray(),
+            })
+            .GroupBy(x => (x.DayIndex, x.Hour))
+            .Select(group => group
+                .OrderByDescending(x => x.RequiredKw)
+                .ThenByDescending(x => x.Vehicles)
+                .First())
+            .ToDictionary(x => (x.DayIndex, x.Hour));
+
+        return Enumerable.Range(0, 7)
+            .SelectMany(day => Enumerable.Range(0, 24).Select(hour =>
+            {
+                peakPerWeekHour.TryGetValue((day, hour), out var peak);
+                var vehicles = peak?.Vehicles ?? 0;
+                var events = peak?.Events ?? 0;
+                var demandKwh = peak?.DemandKwh ?? 0;
+                var requiredKw = peak?.RequiredKw ?? 0;
+                return new WeeklyDemandCell(
+                    day,
+                    WeekDayLabel(day),
+                    hour,
+                    $"{WeekDayLabel(day)} {hour:00}:00",
+                    vehicles,
+                    events,
+                    Math.Round(demandKwh, 0),
+                    Math.Round(requiredKw, 0),
+                    Math.Round(requiredKw / 1000.0, 2),
+                    peak?.Kentekens ?? [],
+                    peak?.Wagencodes ?? []);
+            }))
             .ToArray();
     }
 
@@ -745,6 +834,25 @@ public sealed partial class RouteAnalysisService
         return row.GapHours > 0 ? demandKwh / row.GapHours : demandKwh;
     }
 
+    private static int WeekDayIndex(DayOfWeek dayOfWeek)
+    {
+        return dayOfWeek == DayOfWeek.Sunday ? 6 : (int)dayOfWeek - 1;
+    }
+
+    private static string WeekDayLabel(int dayIndex)
+    {
+        return dayIndex switch
+        {
+            0 => "Maandag",
+            1 => "Dinsdag",
+            2 => "Woensdag",
+            3 => "Donderdag",
+            4 => "Vrijdag",
+            5 => "Zaterdag",
+            _ => "Zondag"
+        };
+    }
+
     private static SelectionDetailResponse EmptySelection(
         string status,
         string selectionType,
@@ -764,7 +872,7 @@ public sealed partial class RouteAnalysisService
             new DistanceDistribution(0, 0, 0, 0, 0, 0, 0, []),
             [],
             [],
-            new ChargingProfile(0, 0, 0, 0, 0, [], [], message),
+            new ChargingProfile(0, 0, 0, 0, 0, [], [], [], message),
             false);
     }
 
@@ -1073,6 +1181,8 @@ public sealed partial class RouteAnalysisService
     private sealed class HourAccumulator
     {
         public HashSet<string> VehicleKeys { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> Kentekens { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> Wagencodes { get; } = new(StringComparer.OrdinalIgnoreCase);
         public long Events { get; set; }
         public double DemandKwh { get; set; }
         public double RequiredKw { get; set; }

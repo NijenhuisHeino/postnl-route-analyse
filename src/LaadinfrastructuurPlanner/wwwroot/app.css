@@ -744,6 +744,85 @@ td span,
   color: rgba(46, 35, 67, 0.72);
 }
 
+.week-demand-card {
+  overflow: hidden;
+}
+
+.week-demand-heatmap {
+  display: grid;
+  grid-template-columns: 44px repeat(24, minmax(34px, 1fr));
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.week-grid-corner,
+.week-hour-label,
+.week-day-label {
+  min-height: 24px;
+  display: grid;
+  place-items: center;
+  color: var(--eta-muted);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.week-day-label {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  justify-content: start;
+  padding-left: 4px;
+  background: #fff;
+  color: var(--eta-purple);
+}
+
+.week-cell {
+  min-width: 34px;
+  min-height: 34px;
+  margin: 0;
+  padding: 2px;
+  border: 1px solid rgba(220, 38, 38, calc(var(--hour-alpha) + 0.04));
+  border-radius: 5px;
+  background: rgba(220, 38, 38, var(--hour-alpha));
+  color: var(--eta-purple);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  box-shadow: none;
+}
+
+.week-cell.active {
+  outline: 2px solid var(--eta-purple);
+  outline-offset: 1px;
+}
+
+.week-cell span {
+  overflow: hidden;
+  max-width: 100%;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.week-demand-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--eta-border);
+  color: var(--eta-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.week-demand-detail strong {
+  color: var(--eta-purple);
+}
+
 .histogram-row {
   display: grid;
   grid-template-columns: 70px minmax(0, 1fr) 44px;
